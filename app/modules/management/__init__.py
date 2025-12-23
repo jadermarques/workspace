@@ -1,0 +1,1 @@
+# Pacote de gestão (placeholders).
