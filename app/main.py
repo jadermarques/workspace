@@ -6,20 +6,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import os
-from pathlib import Path
 
 import requests
 import streamlit as st
 from openai import OpenAI
 
-from app.components.sidebar import render_sidebar
+from app.components.sidebar import DEFAULT_MODULES, render_sidebar
 from src.bot.engine import load_env_once, load_settings
 from src.utils.db_init import DB_PATH, ensure_db
 
 
 def main():
     st.set_page_config(page_title="Workspace", page_icon="🧰", layout="wide")
-    render_sidebar(modules=["Principal", "Bot Studio", "Configurações", "Relatórios", "Gestão", "Analytics"], default="Principal", show_selector=False)
+    render_sidebar(modules=DEFAULT_MODULES, default="Principal", show_selector=False)
 
     load_env_once()
     st.title("Workspace")
