@@ -14,8 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.bot.engine import load_settings
-
-TZ = timezone(timedelta(hours=-3))
+from src.utils.timezone import TZ
 
 
 def _cw_headers(token: str) -> Dict[str, str]:
@@ -124,14 +123,25 @@ def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: d
     return conversations
 
 
-def _fetch_messages(base_url: str, account_id: str, token: str, conversation_id: str, max_pages: int = 20, per_page: int = 50) -> List[Dict]:
+def _fetch_messages(
+    base_url: str,
+    account_id: str,
+    token: str,
+    conversation_id: str,
+    start_dt: Optional[datetime] = None,
+    max_batches: int = 200,
+) -> List[Dict]:
     messages = []
-    page = 1
-    while page <= max_pages:
+    before_id = None
+    batches = 0
+    while batches < max_batches:
         url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+        params = {}
+        if before_id:
+            params["before"] = before_id
         resp = requests.get(
             url,
-            params={"page": page, "per_page": per_page},
+            params=params,
             headers=_cw_headers(token),
             timeout=20,
         )
@@ -142,9 +152,20 @@ def _fetch_messages(base_url: str, account_id: str, token: str, conversation_id:
         if not payload:
             break
         messages.extend(payload)
-        if len(payload) < per_page:
+
+        oldest = payload[0]
+        next_before = oldest.get("id")
+        if not next_before or next_before == before_id:
             break
-        page += 1
+        before_id = next_before
+
+        if start_dt:
+            oldest_dt = _parse_ts(oldest.get("created_at") or oldest.get("timestamp"))
+            if oldest_dt and oldest_dt.astimezone(TZ) < start_dt:
+                break
+        if len(payload) < 20:
+            break
+        batches += 1
     return messages
 
 
@@ -198,8 +219,9 @@ def render_messages_tab():
         st.error("Configure CHATWOOT_URL, CHATWOOT_API_TOKEN e CHATWOOT_ACCOUNT_ID para usar este painel.")
         return
 
-    default_start = date.today() - timedelta(days=7)
-    default_end = date.today()
+    today_local = datetime.now(TZ).date()
+    default_start = today_local - timedelta(days=7)
+    default_end = today_local
 
     inbox_cache = st.session_state.get("cw_inboxes")
     if inbox_cache is None:
@@ -325,7 +347,7 @@ def render_messages_tab():
                     continue
 
                 try:
-                    msgs = _fetch_messages(cw_url, cw_account, cw_token, conv_id)
+                    msgs = _fetch_messages(cw_url, cw_account, cw_token, conv_id, start_dt=start_dt)
                 except Exception as e:
                     st.warning(f"Falha ao buscar mensagens da conversa {conv_id}: {e}")
                     continue

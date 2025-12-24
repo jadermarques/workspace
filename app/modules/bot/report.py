@@ -33,8 +33,9 @@ def render_atendimentos_dashboard():
         return
 
     hour_options = [time(h, 0) for h in range(24)]
-    default_start_date = date.today() - timedelta(days=7)
-    default_end_date = date.today()
+    today_local = datetime.now(TZ).date()
+    default_start_date = today_local - timedelta(days=7)
+    default_end_date = today_local
 
     refresh_agents = st.button("Atualizar lista de agentes do Chatwoot", type="secondary")
     cached_agents = st.session_state.get("cw_agents_cache")

@@ -29,7 +29,7 @@ def render_config_module():
     Interface principal do módulo de Configurações, organizada em abas internas.
     Abas: Parâmetros do modelo, Chatwoot, Funcionamento por dia.
     """
-    st.header("Configuração do Bot")
+    st.header("Configurações Gerais")
     load_env_once()
 
     current = load_settings() or {}
@@ -52,7 +52,7 @@ def render_config_module():
     bot_enabled = current.get("bot_enabled", True)
 
     tab_modelo, tab_chatwoot, tab_funcionamento = st.tabs(
-        ["Parâmetros do modelo", "Chatwoot", "Funcionamento por dia"]
+        ["Parâmetros do modelo", "Chatwoot", "Funcionamento do Bot (por dia)"]
     )
 
     # --- Aba Parâmetros do modelo ---
@@ -173,7 +173,7 @@ def render_config_module():
 
     # --- Aba Funcionamento por dia ---
     with tab_funcionamento:
-        st.subheader("Funcionamento por dia")
+        st.subheader("Funcionamento do Bot (por dia)")
         dias_semana = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
         schedule = {}
         cols = st.columns(3)
