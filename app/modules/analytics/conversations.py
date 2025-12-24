@@ -45,6 +45,18 @@ def _format_datetime_value(value) -> str:
     return dt.astimezone(TZ).strftime("%d/%m/%Y %H:%M:%S")
 
 
+def _format_duration(start_dt: Optional[datetime], end_dt: Optional[datetime]) -> str:
+    if not start_dt or not end_dt:
+        return ""
+    delta = end_dt - start_dt
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 0:
+        return ""
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def _match_partial(text: str, pattern: str) -> bool:
     if not pattern:
         return True
@@ -603,7 +615,7 @@ def render_conversations_analysis_tab():
         agent_options,
         default_start,
         default_end,
-        result_keys=["conv_analysis_stats"],
+        result_keys=["conv_analysis_stats", "conv_analysis_messages"],
     )
 
     if filters["gerar"]:
@@ -637,13 +649,44 @@ def render_conversations_analysis_tab():
         )
         if not rows:
             st.session_state["conv_analysis_stats"] = None
+            st.session_state["conv_analysis_messages"] = []
         else:
             total_recebidas = 0
             total_enviadas = 0
             total_privadas = 0
             conversas_privadas = set()
+            message_rows = []
+            message_conv_set = set(message_conv_ids)
+            table_conv_set = set(conv_api_ids)
+            conv_meta = {}
+            for conv in conversations:
+                conv_id = conv.get("id") or conv.get("display_id")
+                if conv_id is None or conv_id not in message_conv_set:
+                    continue
+                created_raw = conv.get("created_at")
+                created_dt = _parse_ts(created_raw)
+                created_local = created_dt.astimezone(TZ) if created_dt else None
+                first_reply_raw = conv.get("first_reply_created_at")
+                first_reply_dt = None
+                if first_reply_raw not in (None, "", 0, "0", 0.0, "0.0"):
+                    first_reply_dt = _parse_ts(first_reply_raw)
+                    if first_reply_dt:
+                        first_reply_dt = first_reply_dt.astimezone(TZ)
+                meta = conv.get("meta", {}) or {}
+                sender = meta.get("sender") or conv.get("contact") or {}
+                contact_name_val = sender.get("name") or sender.get("identifier") or ""
+                contact_phone_val = sender.get("phone_number") or sender.get("phone") or sender.get("identifier") or ""
+                conv_meta[conv_id] = {
+                    "created_dt": created_local,
+                    "created_str": created_local.strftime("%d/%m/%Y %H:%M:%S") if created_local else "",
+                    "inbox_name": inbox_id_to_name.get(conv.get("inbox_id"), conv.get("inbox_id")),
+                    "first_reply_delta": _format_duration(created_local, first_reply_dt),
+                    "contact_name": contact_name_val,
+                    "contact_phone": contact_phone_val,
+                }
             with st.spinner("Contando mensagens das conversas..."):
                 for conv_id in message_conv_ids:
+                    conv_info = conv_meta.get(conv_id) or {}
                     try:
                         msgs = _fetch_messages(cw_url, cw_account, cw_token, conv_id, start_dt=start_dt)
                     except Exception as e:
@@ -655,6 +698,43 @@ def render_conversations_analysis_tab():
                     total_privadas += priv
                     if priv:
                         conversas_privadas.add(conv_id)
+                    should_add_rows = conv_id in table_conv_set
+                    for msg in msgs:
+                        msg_dt_raw = msg.get("created_at") or msg.get("timestamp")
+                        msg_dt = _parse_ts(msg_dt_raw)
+                        msg_local = None
+                        if msg_dt:
+                            msg_local = msg_dt.astimezone(TZ)
+                            if msg_local < start_dt or msg_local > end_dt:
+                                continue
+                        if not should_add_rows:
+                            continue
+                        content = msg.get("content")
+                        if content is None:
+                            content = msg.get("processed_message_content") or ""
+                        message_rows.append(
+                            {
+                                "id_conversa": conv_id,
+                                "nome do contato": conv_info.get("contact_name", ""),
+                                "numero do contato": conv_info.get("contact_phone", ""),
+                                "data hora de início da conversa": conv_info.get("created_str", ""),
+                                "caixa de entrada": conv_info.get("inbox_name", ""),
+                                "tempo para a primeira resposta": conv_info.get("first_reply_delta", ""),
+                                "mensagem": content,
+                                "_sort_conv_dt": conv_info.get("created_dt"),
+                                "_sort_msg_dt": msg_local if msg_dt else None,
+                            }
+                        )
+            message_rows.sort(
+                key=lambda row: (
+                    row.get("_sort_conv_dt") or datetime.min.replace(tzinfo=TZ),
+                    str(row.get("id_conversa")),
+                    row.get("_sort_msg_dt") or datetime.min.replace(tzinfo=TZ),
+                )
+            )
+            for row in message_rows:
+                row.pop("_sort_conv_dt", None)
+                row.pop("_sort_msg_dt", None)
             st.session_state["conv_analysis_stats"] = {
                 "total_conversas": len(rows),
                 "total_conversas_privadas": len(conversas_privadas),
@@ -662,6 +742,7 @@ def render_conversations_analysis_tab():
                 "total_enviadas": total_enviadas,
                 "total_privadas": total_privadas,
             }
+            st.session_state["conv_analysis_messages"] = message_rows
 
     stats = st.session_state.get("conv_analysis_stats")
     if stats:
@@ -671,6 +752,30 @@ def render_conversations_analysis_tab():
         col3.metric("Total de mensagens recebidas", stats["total_recebidas"])
         col4.metric("Total de mensagens enviadas", stats["total_enviadas"])
         col5.metric("Total de mensagens privadas", stats["total_privadas"])
+        messages_table = st.session_state.get("conv_analysis_messages") or []
+        if messages_table:
+            df_messages = pd.DataFrame(messages_table)
+            display_cols = [
+                "id_conversa",
+                "nome do contato",
+                "numero do contato",
+                "data hora de início da conversa",
+                "caixa de entrada",
+                "tempo para a primeira resposta",
+                "mensagem",
+            ]
+            df_messages = df_messages.reindex(columns=display_cols)
+            st.dataframe(df_messages, use_container_width=True)
+            csv_data = df_messages.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Exportar CSV",
+                data=csv_data,
+                file_name="analise_conversas_mensagens.csv",
+                mime="text/csv",
+                key="conv_analysis_messages_csv",
+            )
+        elif filters["gerar"]:
+            st.info("Nenhuma mensagem encontrada para o período selecionado.")
     elif filters["gerar"]:
         st.info("Nenhuma conversa encontrada para os filtros.")
 

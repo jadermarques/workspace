@@ -6,6 +6,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import os
+from datetime import datetime, timezone
 
 import requests
 import streamlit as st
@@ -14,6 +15,7 @@ from openai import OpenAI
 from app.components.sidebar import DEFAULT_MODULES, render_sidebar
 from src.bot.engine import load_env_once, load_settings
 from src.utils.db_init import DB_PATH, ensure_db
+from src.utils.timezone import TZ
 
 
 def main():
@@ -113,6 +115,56 @@ def main():
     else:
         cw_status = ("warn", "Credenciais Chatwoot ausentes")
 
+    # Versão e hora do Chatwoot
+    if cw_url and cw_token and cw_account:
+        try:
+            resp = requests.get(
+                f"{cw_url}/api",
+                headers={"api_access_token": cw_token},
+                timeout=5,
+            )
+            if resp.status_code < 400:
+                data = resp.json() or {}
+                version = data.get("version") or data.get("chatwoot_version")
+                if version:
+                    cw_version_status = ("ok", f"Versão {version} • host: {cw_url}")
+                else:
+                    cw_version_status = ("warn", "Versão não disponível no retorno da API")
+                timestamp = data.get("timestamp")
+                cw_time_status = ("warn", "Hora não disponível no retorno da API")
+                if timestamp:
+                    try:
+                        if isinstance(timestamp, (int, float)):
+                            cw_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                        elif isinstance(timestamp, str):
+                            try:
+                                cw_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                                if cw_dt.tzinfo is None:
+                                    cw_dt = cw_dt.replace(tzinfo=timezone.utc)
+                            except ValueError:
+                                cw_dt = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+                        else:
+                            cw_dt = None
+                    except Exception:
+                        cw_dt = None
+                    if cw_dt:
+                        cw_dt_local = cw_dt.astimezone(TZ)
+                        cw_time_status = (
+                            "ok",
+                            "Hora: "
+                            f"{cw_dt_local.strftime('%H:%M:%S')} • Time zone: {TZ.key}"
+                            f"<br/><span style='font-size:13px;'>UTC: {cw_dt.strftime('%H:%M:%S')}</span>",
+                        )
+            else:
+                cw_version_status = ("warn", f"Chatwoot respondeu {resp.status_code} ao buscar versão")
+                cw_time_status = ("warn", f"Chatwoot respondeu {resp.status_code} ao buscar hora")
+        except Exception as e:
+            cw_version_status = ("warn", f"Erro ao buscar versão: {e}")
+            cw_time_status = ("warn", f"Erro ao buscar hora: {e}")
+    else:
+        cw_version_status = ("warn", "Credenciais Chatwoot ausentes")
+        cw_time_status = ("warn", "Credenciais Chatwoot ausentes")
+
     # Status OpenAI
     api_key = os.getenv("OPENAI_API_KEY")
     if api_key:
@@ -136,7 +188,7 @@ def main():
         oa_status = ("error", "OPENAI_API_KEY não encontrada (.env)")
 
     st.markdown("### Status do sistema")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     # Monta detalhes do DB (workspace + Chatwoot)
     cw_connected = cw_status[0] == "ok"
     db_lines = []
@@ -151,6 +203,17 @@ def main():
         status_chip("Chatwoot", cw_status[0], cw_status[1])
     with col3:
         status_chip("OpenAI", oa_status[0], oa_status[1])
+    with col4:
+        status_chip("Versão do Chatwoot", cw_version_status[0], cw_version_status[1])
+
+    workspace_now = datetime.now(TZ)
+    workspace_time_status = ("ok", f"Hora: {workspace_now.strftime('%H:%M:%S')} • Time zone: {TZ.key}")
+
+    col_time1, col_time2 = st.columns(2)
+    with col_time1:
+        status_chip("Hora do Chatwoot", cw_time_status[0], cw_time_status[1])
+    with col_time2:
+        status_chip("Hora do Workspace", workspace_time_status[0], workspace_time_status[1])
 
     st.markdown("### Como navegar")
     st.info(
