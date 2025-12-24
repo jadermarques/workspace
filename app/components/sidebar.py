@@ -3,7 +3,7 @@ from typing import Dict, List
 import streamlit as st
 
 
-DEFAULT_MODULES = ["Principal", "Bot Studio", "Configurações", "Relatórios", "Gestão", "Analytics"]
+DEFAULT_MODULES = ["Principal", "Bot Studio", "Configurações", "Relatórios", "Gestão", "Análises"]
 
 
 def render_sidebar(modules: List[str] = None, default: str = None, show_selector: bool = True) -> str:
@@ -21,7 +21,7 @@ def render_sidebar(modules: List[str] = None, default: str = None, show_selector
         "Configurações": "⚙️",
         "Relatórios": "📊",
         "Gestão": "🗂️",
-        "Analytics": "📈",
+        "Análises": "📈",
     }
     if show_selector:
         selection = st.sidebar.selectbox(

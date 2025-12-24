@@ -17,11 +17,11 @@ from src.utils.db_init import DB_PATH, ensure_db
 
 
 def main():
-    st.set_page_config(page_title="Workspace", page_icon="🧰", layout="wide")
+    st.set_page_config(page_title="Principal", page_icon="🧰", layout="wide")
     render_sidebar(modules=DEFAULT_MODULES, default="Principal", show_selector=False)
 
     load_env_once()
-    st.title("Workspace")
+    st.title("Principal")
     st.caption("Visão geral do sistema")
 
     def status_chip(label: str, status: str, detail: str = ""):
