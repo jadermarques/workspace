@@ -1,3 +1,5 @@
+"""Bot runtime service for handling Chatwoot messages via FastAPI."""
+
 import json
 import os
 import sys
@@ -52,6 +54,7 @@ mensagens_processadas = set()  # ids de mensagens já tratadas (evita duplicidad
 
 
 def load_env_local():
+    """Load environment variables once for the bot runtime."""
     global ENV_LOADED
     if ENV_LOADED:
         return
@@ -67,6 +70,7 @@ def load_env_local():
 
 
 def responder_cliente(conversation_id, primeiro_nome, user_message, inbox_id=None):
+    """Process an incoming message and respond through the configured LLM."""
     load_env_local()
     config = load_settings()
     if not config:

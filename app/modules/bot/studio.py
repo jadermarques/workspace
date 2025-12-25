@@ -1,3 +1,5 @@
+"""UI composition for the Bot Studio module."""
+
 import sys
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from src.bot.engine import load_settings, set_bot_enabled
 
 
 def _render_activation():
+    """Render bot activation toggle and persist changes."""
     current = load_settings() or {}
     enabled = st.checkbox("Bot ligado", value=current.get("bot_enabled", True))
     if st.button("Salvar ativação", type="primary"):
@@ -21,6 +24,7 @@ def _render_activation():
 
 
 def render_bot_studio_module():
+    """Render the Bot Studio tabs (profiles, logs, monitoring, activation)."""
     tabs = st.tabs(["Perfil Bot", "Logs", "Monitoramento", "Ativação BOT"])
     with tabs[0]:
         render_profiles_tab()

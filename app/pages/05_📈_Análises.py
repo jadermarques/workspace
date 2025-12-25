@@ -1,3 +1,5 @@
+"""Streamlit page for analytics modules."""
+
 import sys
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from app.modules.bot.monitoring import render_logs
 
 
 def main():
+    """Render the analytics page with conversations and messages tabs."""
     st.set_page_config(page_title="Análises", page_icon="📈", layout="wide")
     render_sidebar(show_selector=False)
     tab_conversas, tab_analise_conversas, tab_mensagens = st.tabs(["Conversas", "Análise de Conversas", "Mensagens"])

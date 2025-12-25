@@ -1,4 +1,7 @@
+"""Main workspace landing page and system status cards."""
+
 import sys
+import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]  # raiz do projeto
@@ -19,6 +22,7 @@ from src.utils.timezone import TZ
 
 
 def main():
+    """Render the main workspace page and system status overview."""
     st.set_page_config(page_title="Principal", page_icon="🧰", layout="wide")
     render_sidebar(modules=DEFAULT_MODULES, default="Principal", show_selector=False)
 
@@ -26,7 +30,8 @@ def main():
     st.title("Principal")
     st.caption("Visão geral do sistema")
 
-    def status_chip(label: str, status: str, detail: str = ""):
+    def status_card_html(label: str, status: str, detail: str = "", span: int = 1) -> str:
+        """Return HTML for a status card with label, status, and detail text."""
         colors = {
             "ok": ("#16a34a", "#ecfdf3"),
             "warn": ("#b45309", "#fffbeb"),
@@ -34,15 +39,16 @@ def main():
         }
         fg, bg = colors.get(status, ("#1f2937", "#f3f4f6"))
         dot = "🟢" if status == "ok" else "🟠" if status == "warn" else "🔴"
-        st.markdown(
-            f"""
-            <div style="background:{bg};color:{fg};padding:12px 14px;border-radius:10px;border:1px solid rgba(0,0,0,0.05);">
-                <strong>{dot} {label}</strong><br/>
-                <span style="font-size:13px;">{detail}</span>
+        span_class = " status-card--span-2" if span == 2 else ""
+        detail_html = detail or ""
+        return textwrap.dedent(
+            f"""\
+            <div class="status-card{span_class}" style="--status-bg:{bg}; --status-fg:{fg};">
+                <strong>{dot} {label}</strong>
+                <span class="status-card__detail">{detail_html}</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            """
+        ).strip()
 
     # Status DB
     try:
@@ -188,7 +194,51 @@ def main():
         oa_status = ("error", "OPENAI_API_KEY não encontrada (.env)")
 
     st.markdown("### Status do sistema")
-    col1, col2, col3, col4 = st.columns(4)
+    style_html = textwrap.dedent(
+        """\
+        <style>
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+        .status-card {
+            background: var(--status-bg);
+            color: var(--status-fg);
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,0.05);
+            box-sizing: border-box;
+            height: 100%;
+        }
+        .status-card strong {
+            display: block;
+            margin-bottom: 6px;
+        }
+        .status-card__detail {
+            font-size: 13px;
+        }
+        .status-card--span-2 {
+            grid-column: span 2;
+        }
+        @media (max-width: 1200px) {
+            .status-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .status-card--span-2 {
+                grid-column: span 1;
+            }
+        }
+        @media (max-width: 700px) {
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        </style>
+        """
+    ).strip()
+    st.markdown(style_html, unsafe_allow_html=True)
     # Monta detalhes do DB (workspace + Chatwoot)
     cw_connected = cw_status[0] == "ok"
     db_lines = []
@@ -197,23 +247,22 @@ def main():
     db_detail = "<br/>".join(db_lines)
     db_overall_status = db_status[0] if cw_connected else ("warn" if db_status[0] == "ok" else db_status[0])
 
-    with col1:
-        status_chip("Banco de dados", db_overall_status, db_detail)
-    with col2:
-        status_chip("Chatwoot", cw_status[0], cw_status[1])
-    with col3:
-        status_chip("OpenAI", oa_status[0], oa_status[1])
-    with col4:
-        status_chip("Versão do Chatwoot", cw_version_status[0], cw_version_status[1])
-
     workspace_now = datetime.now(TZ)
     workspace_time_status = ("ok", f"Hora: {workspace_now.strftime('%H:%M:%S')} • Time zone: {TZ.key}")
 
-    col_time1, col_time2 = st.columns(2)
-    with col_time1:
-        status_chip("Hora do Chatwoot", cw_time_status[0], cw_time_status[1])
-    with col_time2:
-        status_chip("Hora do Workspace", workspace_time_status[0], workspace_time_status[1])
+    status_grid_html = "\n".join(
+        [
+            '<div class="status-grid">',
+            status_card_html("Banco de dados", db_overall_status, db_detail),
+            status_card_html("Chatwoot", cw_status[0], cw_status[1]),
+            status_card_html("OpenAI", oa_status[0], oa_status[1]),
+            status_card_html("Versão do Chatwoot", cw_version_status[0], cw_version_status[1]),
+            status_card_html("Hora do Chatwoot", cw_time_status[0], cw_time_status[1], span=2),
+            status_card_html("Hora do Workspace", workspace_time_status[0], workspace_time_status[1], span=2),
+            "</div>",
+        ]
+    )
+    st.markdown(status_grid_html, unsafe_allow_html=True)
 
     st.markdown("### Como navegar")
     st.info(

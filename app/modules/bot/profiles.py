@@ -1,3 +1,5 @@
+"""UI for managing bot prompt profiles."""
+
 import sys
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from src.bot.engine import (
 
 
 def render_profiles_tab():
+    """Render the prompt profiles management tab."""
     st.header("Perfis do BOT")
     profiles_list = load_prompt_profiles()
     profile_choices = {"Novo perfil": None}

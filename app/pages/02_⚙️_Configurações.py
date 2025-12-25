@@ -1,3 +1,5 @@
+"""Streamlit page for configuration settings."""
+
 import sys
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from app.modules.bot.config_app import render_config_module
 
 
 def main():
+    """Render the configuration page."""
     st.set_page_config(page_title="Configurações", page_icon="⚙️", layout="wide")
     render_sidebar(show_selector=False)
     render_config_module()

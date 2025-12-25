@@ -1,3 +1,5 @@
+"""Streamlit dashboard for Chatwoot attendance reports."""
+
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -20,6 +22,7 @@ from src.bot.engine import load_env_once, load_settings
 
 
 def render_atendimentos_dashboard():
+    """Render the Chatwoot attendance dashboard with filters and exports."""
     st.header("Atendimentos (Chatwoot)")
     load_env_once()
 
@@ -266,6 +269,7 @@ def render_atendimentos_dashboard():
 
 
 def _parse_ts(value):
+    """Parse timestamps from numeric or string values into UTC-aware datetimes."""
     if value is None:
         return None
     try:

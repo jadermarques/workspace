@@ -1,3 +1,5 @@
+"""Streamlit page for bot studio configuration."""
+
 import sys
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from app.modules.bot.studio import render_bot_studio_module
 
 
 def main():
+    """Render the bot studio page."""
     st.set_page_config(page_title="Bot Studio", page_icon="🤖", layout="wide")
     render_sidebar(show_selector=False)
     render_bot_studio_module()

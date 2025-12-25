@@ -1,3 +1,5 @@
+"""Streamlit page for management modules."""
+
 import sys
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from app.components.sidebar import render_sidebar
 
 
 def main():
+    """Render the management page placeholder content."""
     st.set_page_config(page_title="Gestão", page_icon="🗂️", layout="wide")
     render_sidebar(show_selector=False)
     st.header("Gestão")

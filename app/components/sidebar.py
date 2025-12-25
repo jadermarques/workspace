@@ -1,3 +1,5 @@
+"""Sidebar navigation helpers and defaults for the Streamlit app."""
+
 from typing import Dict, List
 
 import streamlit as st
@@ -7,10 +9,7 @@ DEFAULT_MODULES = ["Principal", "Bot Studio", "Configurações", "Relatórios", 
 
 
 def render_sidebar(modules: List[str] = None, default: str = None, show_selector: bool = True) -> str:
-    """
-    Menu lateral usando selectbox (estilo lista simples) com ícones.
-    Quando show_selector=False, apenas retorna o default (para páginas isoladas).
-    """
+    """Render the sidebar navigation and return the selected module."""
     modules = modules or DEFAULT_MODULES
     if default is None:
         default = modules[0]

@@ -1,3 +1,9 @@
+"""Analytics views and helpers for Chatwoot conversations.
+
+This module fetches conversations/messages from the Chatwoot API, applies filters,
+and renders Streamlit tabs for conversation listings and analysis metrics.
+"""
+
 import sys
 import json
 import re
@@ -19,10 +25,12 @@ from src.utils.timezone import TZ
 
 
 def _cw_headers(token: str) -> Dict[str, str]:
+    """Build default headers for Chatwoot API requests."""
     return {"api_access_token": token, "Content-Type": "application/json"}
 
 
 def _parse_ts(value) -> Optional[datetime]:
+    """Parse timestamps from numeric or string values into UTC-aware datetimes."""
     if value is None:
         return None
     try:
@@ -39,6 +47,7 @@ def _parse_ts(value) -> Optional[datetime]:
 
 
 def _format_datetime_value(value) -> str:
+    """Format a timestamp value into local timezone string."""
     dt = _parse_ts(value)
     if not dt:
         return value
@@ -46,6 +55,7 @@ def _format_datetime_value(value) -> str:
 
 
 def _format_duration(start_dt: Optional[datetime], end_dt: Optional[datetime]) -> str:
+    """Return a HH:MM:SS duration string for a time delta."""
     if not start_dt or not end_dt:
         return ""
     delta = end_dt - start_dt
@@ -58,6 +68,7 @@ def _format_duration(start_dt: Optional[datetime], end_dt: Optional[datetime]) -
 
 
 def _match_partial(text: str, pattern: str) -> bool:
+    """Match a partial pattern against text with optional wildcard support."""
     if not pattern:
         return True
     text = text or ""
@@ -71,6 +82,7 @@ def _match_partial(text: str, pattern: str) -> bool:
 
 
 def _request_with_retry(url: str, params: Dict, headers: Dict, timeout: int, retries: int = 1):
+    """Request a URL with basic retry handling for transient errors."""
     last_exc = None
     current_timeout = timeout
     for attempt in range(retries + 1):
@@ -93,6 +105,7 @@ def _request_with_retry(url: str, params: Dict, headers: Dict, timeout: int, ret
 
 
 def _fetch_inboxes(base_url: str, account_id: str, token: str, max_pages: int = 5, per_page: int = 100) -> List[Dict]:
+    """Fetch inboxes from Chatwoot with pagination."""
     inboxes = []
     page = 1
     while page <= max_pages:
@@ -128,6 +141,7 @@ def _fetch_inboxes(base_url: str, account_id: str, token: str, max_pages: int = 
 
 
 def _fetch_agents(base_url: str, account_id: str, token: str, max_pages: int = 5, per_page: int = 100) -> List[Dict]:
+    """Fetch agents/users from Chatwoot, trying multiple endpoints."""
     agents = []
     endpoints = ["/users", "/agents"]
     for endpoint in endpoints:
@@ -165,6 +179,7 @@ def _fetch_agents(base_url: str, account_id: str, token: str, max_pages: int = 5
 
 
 def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: datetime, status: str = "all", max_pages: int = 30, per_page: int = 50) -> List[Dict]:
+    """Fetch conversations from Chatwoot, stopping when past the start date."""
     conversations = []
     page = 1
     while page <= max_pages:
@@ -202,6 +217,7 @@ def _fetch_messages(
     start_dt: Optional[datetime] = None,
     max_batches: int = 200,
 ) -> List[Dict]:
+    """Fetch conversation messages using the `before` cursor for pagination."""
     messages = []
     before_id = None
     batches = 0
@@ -249,6 +265,7 @@ def _fetch_messages(
 
 
 def _normalize_conversation(conv: Dict) -> Dict:
+    """Normalize conversation payload by serializing nested values."""
     clean = {}
     for k, v in conv.items():
         if isinstance(v, (dict, list)):
@@ -259,10 +276,12 @@ def _normalize_conversation(conv: Dict) -> Dict:
 
 
 def _build_state_key(prefix: str, suffix: str) -> str:
+    """Build a namespaced Streamlit session_state key."""
     return f"{prefix}_{suffix}"
 
 
 def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], agent_options: List[str], default_start: date, default_end: date, result_keys: List[str]) -> Dict:
+    """Render filter controls and return their values in a dict."""
     defaults = {
         _build_state_key(prefix, "start_date"): default_start,
         _build_state_key(prefix, "end_date"): default_end,
@@ -350,6 +369,7 @@ def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], age
 
 
 def _collect_conversation_rows(conversations: List[Dict], filters: Dict, inbox_id_to_name: Dict[int, str], start_dt: datetime, end_dt: datetime, enforce_created_range: bool = True):
+    """Filter conversations and build row data plus conversation IDs."""
     rows = []
     conversation_api_ids = []
     for conv in conversations:
@@ -417,6 +437,7 @@ def _collect_conversation_rows(conversations: List[Dict], filters: Dict, inbox_i
 
 
 def _message_direction(msg: Dict) -> Optional[str]:
+    """Infer message direction (incoming/outgoing) from payload."""
     msg_type = msg.get("message_type")
     if isinstance(msg_type, int):
         if msg_type == 0:
@@ -441,6 +462,7 @@ def _message_direction(msg: Dict) -> Optional[str]:
 
 
 def _count_message_directions(messages: List[Dict], start_dt: datetime, end_dt: datetime):
+    """Count incoming/outgoing/private messages within a time window."""
     received = 0
     sent = 0
     private_total = 0
@@ -465,6 +487,7 @@ def _count_message_directions(messages: List[Dict], start_dt: datetime, end_dt: 
 
 
 def render_conversations_tab():
+    """Render the Conversations tab with filters, table, and CSV export."""
     st.subheader("Conversas")
     settings = load_settings() or {}
     cw_url = (settings.get("chatwoot_url") or "").rstrip("/")
@@ -572,6 +595,7 @@ def render_conversations_tab():
 
 
 def render_conversations_analysis_tab():
+    """Render the Conversations Analysis tab with metrics and message table."""
     st.subheader("Análise de Conversas")
     settings = load_settings() or {}
     cw_url = (settings.get("chatwoot_url") or "").rstrip("/")

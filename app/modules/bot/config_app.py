@@ -1,3 +1,5 @@
+"""UI for bot configuration and integrations."""
+
 import sys
 from pathlib import Path
 
@@ -19,16 +21,14 @@ from src.bot.rules import default_schedule
 
 
 def _provider_options(extra_providers):
+    """Return base and expanded provider option lists."""
     base_provider_options = ["openai", "gemini", "anthropic", "azure-openai", "outro"]
     all_provider_options = base_provider_options + [p for p in extra_providers.keys() if p not in base_provider_options]
     return base_provider_options, all_provider_options
 
 
 def render_config_module():
-    """
-    Interface principal do módulo de Configurações, organizada em abas internas.
-    Abas: Parâmetros do modelo, Chatwoot, Funcionamento por dia.
-    """
+    """Render the settings module with model, Chatwoot, and schedule tabs."""
     st.header("Configurações Gerais")
     load_env_once()
 

@@ -1,3 +1,5 @@
+"""Streamlit page for reports."""
+
 import sys
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from app.modules.bot.report import render_atendimentos_dashboard
 
 
 def main():
+    """Render the reports page and attendance dashboard."""
     st.set_page_config(page_title="Relatórios", page_icon="📊", layout="wide")
     render_sidebar(show_selector=False)
     render_atendimentos_dashboard()

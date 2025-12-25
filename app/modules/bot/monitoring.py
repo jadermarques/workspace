@@ -1,3 +1,5 @@
+"""Monitoring UI for conversation logs."""
+
 import sys
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from src.utils.formatters import format_ts
 
 
 def render_logs(limit: int = 200):
+    """Render conversation logs with optional record limit."""
     st.header("Logs de Conversa")
     rows = load_logs(limit=limit)
     if not rows:

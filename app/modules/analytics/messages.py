@@ -1,3 +1,9 @@
+"""Analytics views and helpers for Chatwoot messages.
+
+This module fetches conversations/messages from the Chatwoot API, applies
+filters, and renders the Messages tab with table and CSV export.
+"""
+
 import sys
 import json
 import re
@@ -18,10 +24,12 @@ from src.utils.timezone import TZ
 
 
 def _cw_headers(token: str) -> Dict[str, str]:
+    """Build default headers for Chatwoot API requests."""
     return {"api_access_token": token, "Content-Type": "application/json"}
 
 
 def _parse_ts(value) -> Optional[datetime]:
+    """Parse timestamps from numeric or string values into UTC-aware datetimes."""
     if value is None:
         return None
     try:
@@ -38,6 +46,7 @@ def _parse_ts(value) -> Optional[datetime]:
 
 
 def _format_datetime_value(value, with_ms: bool = False) -> str:
+    """Format a timestamp value in local timezone, optionally with milliseconds."""
     dt = _parse_ts(value)
     if not dt:
         return value
@@ -49,6 +58,7 @@ def _format_datetime_value(value, with_ms: bool = False) -> str:
 
 
 def _match_pattern(text: str, pattern: str) -> bool:
+    """Match text against a pattern that may include '*' wildcards."""
     if not pattern:
         return True
     text = text or ""
@@ -62,6 +72,7 @@ def _match_pattern(text: str, pattern: str) -> bool:
 
 
 def _fetch_inboxes(base_url: str, account_id: str, token: str, max_pages: int = 5, per_page: int = 100) -> List[Dict]:
+    """Fetch inboxes from Chatwoot with pagination."""
     inboxes = []
     page = 1
     while page <= max_pages:
@@ -97,6 +108,7 @@ def _fetch_inboxes(base_url: str, account_id: str, token: str, max_pages: int = 
 
 
 def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: datetime, max_pages: int = 50, per_page: int = 50) -> List[Dict]:
+    """Fetch conversations from Chatwoot, stopping when past the start date."""
     conversations = []
     page = 1
     while page <= max_pages:
@@ -131,6 +143,7 @@ def _fetch_messages(
     start_dt: Optional[datetime] = None,
     max_batches: int = 200,
 ) -> List[Dict]:
+    """Fetch conversation messages using the `before` cursor for pagination."""
     messages = []
     before_id = None
     batches = 0
@@ -170,6 +183,7 @@ def _fetch_messages(
 
 
 def _normalize_message(msg: Dict) -> Dict:
+    """Normalize message payload by serializing nested values."""
     clean = {}
     for k, v in msg.items():
         if isinstance(v, (dict, list)):
@@ -180,6 +194,7 @@ def _normalize_message(msg: Dict) -> Dict:
 
 
 def _extract_transcription(payload) -> Optional[str]:
+    """Extract an audio transcription from nested payload fields."""
     # Apenas lê transcrições já presentes no payload da API do Chatwoot (sem chamadas externas).
     keys = {
         "transcription",
@@ -209,6 +224,7 @@ def _extract_transcription(payload) -> Optional[str]:
 
 
 def render_messages_tab():
+    """Render the Messages tab with filters, table, and CSV export."""
     st.subheader("Mensagens")
     settings = load_settings() or {}
     cw_url = (settings.get("chatwoot_url") or "").rstrip("/")
