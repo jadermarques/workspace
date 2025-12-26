@@ -9,6 +9,8 @@ import sys
 import json
 import re
 import time as time_module
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -103,6 +105,35 @@ def _request_with_retry(url: str, params: Dict, headers: Dict, timeout: int, ret
                 continue
             raise
     raise last_exc
+
+
+def _request_with_rate_limit(
+    url: str,
+    params: Dict,
+    headers: Dict,
+    timeout: int,
+    retries: int = 1,
+    rate_limit_retries: int = 3,
+    base_delay: float = 1.5,
+):
+    """Request a URL with retry and basic 429 backoff handling."""
+    last_resp = None
+    for attempt in range(rate_limit_retries + 1):
+        resp = _request_with_retry(url, params=params, headers=headers, timeout=timeout, retries=retries)
+        last_resp = resp
+        if resp.status_code != 429:
+            return resp
+        retry_after = resp.headers.get("Retry-After") if hasattr(resp, "headers") else None
+        delay = None
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except (TypeError, ValueError):
+                delay = None
+        if delay is None:
+            delay = base_delay * (2**attempt)
+        time_module.sleep(delay + random.uniform(0, 0.3))
+    return last_resp
 
 
 def _fetch_inboxes(base_url: str, account_id: str, token: str, max_pages: int = 5, per_page: int = 100) -> List[Dict]:
@@ -213,6 +244,7 @@ def _fetch_teams(base_url: str, account_id: str, token: str, max_pages: int = 5,
     return teams
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: datetime, status: str = "all", max_pages: int = 30, per_page: int = 50) -> List[Dict]:
     """Fetch conversations from Chatwoot, stopping when past the start date."""
     conversations = []
@@ -221,7 +253,7 @@ def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: d
         url = f"{base_url}/api/v1/accounts/{account_id}/conversations"
         params = {"page": page, "per_page": per_page, "sort": "last_activity_at", "status": status}
         try:
-            resp = _request_with_retry(url, params=params, headers=_cw_headers(token), timeout=25, retries=2)
+            resp = _request_with_rate_limit(url, params=params, headers=_cw_headers(token), timeout=25, retries=2)
         except requests.exceptions.ReadTimeout as exc:
             raise RuntimeError(
                 "Tempo limite ao buscar conversas no Chatwoot. Tente reduzir o período ou aplicar mais filtros."
@@ -244,6 +276,7 @@ def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: d
     return conversations
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_messages(
     base_url: str,
     account_id: str,
@@ -262,7 +295,7 @@ def _fetch_messages(
         if before_id:
             params["before"] = before_id
         try:
-            resp = _request_with_retry(
+            resp = _request_with_rate_limit(
                 url,
                 params=params,
                 headers=_cw_headers(token),
@@ -315,6 +348,25 @@ def _build_state_key(prefix: str, suffix: str) -> str:
     return f"{prefix}_{suffix}"
 
 
+def _normalize_message_statuses(key: str, options: List[str]) -> None:
+    """Normalize multiselect values for message status filters."""
+    if key not in st.session_state:
+        return
+    current = st.session_state.get(key) or []
+    valid = [status for status in current if status in options]
+    if not valid:
+        st.session_state[key] = ["Todos"]
+        return
+    if "Todos" in valid and len(valid) > 1:
+        st.session_state[key] = [status for status in valid if status != "Todos"]
+
+
+def _chunk_list(values: List, size: int):
+    """Yield fixed-size chunks from a list."""
+    for idx in range(0, len(values), size):
+        yield values[idx : idx + size]
+
+
 def _render_conversation_filters(
     prefix: str,
     inbox_options: Dict[str, int],
@@ -324,6 +376,7 @@ def _render_conversation_filters(
     result_keys: List[str],
     team_options: Optional[List[str]] = None,
     conversation_type_options: Optional[List[str]] = None,
+    message_status_options: Optional[List[str]] = None,
 ) -> Dict:
     """Render filter controls and return their values in a dict."""
     defaults = {
@@ -341,6 +394,8 @@ def _render_conversation_filters(
         defaults[_build_state_key(prefix, "team")] = "Todos"
     if conversation_type_options is not None:
         defaults[_build_state_key(prefix, "conversation_type")] = "Todos"
+    if message_status_options is not None:
+        defaults[_build_state_key(prefix, "message_statuses")] = ["Todos"]
     clear_key = _build_state_key(prefix, "clear_filters")
     if st.session_state.get(clear_key):
         for key, default_value in defaults.items():
@@ -357,6 +412,9 @@ def _render_conversation_filters(
         if not valid_inboxes:
             valid_inboxes = list(inbox_options.keys())
         st.session_state[inbox_key] = valid_inboxes
+    message_status_key = _build_state_key(prefix, "message_statuses")
+    if message_status_options is not None:
+        _normalize_message_statuses(message_status_key, message_status_options)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -407,6 +465,19 @@ def _render_conversation_filters(
     with col10:
         assigned_filter = st.selectbox("Conversa atribuída", options=["Todos", "Sim", "Não"], key=_build_state_key(prefix, "assigned"))
 
+    message_statuses = ["Todos"]
+    if message_status_options is not None:
+        message_statuses = st.multiselect(
+            "Status da mensagem",
+            options=message_status_options,
+            key=_build_state_key(prefix, "message_statuses"),
+            help="Selecione um ou mais status. Use 'Todos' para limpar o filtro.",
+            on_change=_normalize_message_statuses,
+            args=(message_status_key, message_status_options),
+        )
+        if not message_statuses:
+            message_statuses = ["Todos"]
+
     selected_inboxes = st.multiselect(
         "Caixa de entrada",
         options=list(inbox_options.keys()),
@@ -441,6 +512,7 @@ def _render_conversation_filters(
         "selected_agent_id": selected_agent_id,
         "selected_team_id": selected_team_id,
         "conversation_type": conversation_type,
+        "message_statuses": message_statuses,
         "gerar": gerar,
     }
 
@@ -818,6 +890,7 @@ def render_conversations_analysis_tab():
         result_keys=["conv_analysis_stats", "conv_analysis_messages"],
         team_options=team_options,
         conversation_type_options=["Agente", "Bot", "Todos"],
+        message_status_options=["Todos", "sent", "delivered", "read", "failed", "pending"],
     )
 
     if filters["gerar"]:
@@ -862,6 +935,9 @@ def render_conversations_analysis_tab():
             table_conv_set = set(conv_api_ids)
             allowed_conv_ids = set()
             conversation_type = filters.get("conversation_type") or "Todos"
+            selected_message_statuses = filters.get("message_statuses") or ["Todos"]
+            if "Todos" in selected_message_statuses:
+                selected_message_statuses = []
             conv_meta = {}
             for conv in conversations:
                 conv_id = conv.get("id") or conv.get("display_id")
@@ -889,76 +965,99 @@ def render_conversations_analysis_tab():
                     "contact_phone": contact_phone_val,
                 }
             with st.spinner("Contando mensagens das conversas..."):
-                for conv_id in message_conv_ids:
-                    conv_info = conv_meta.get(conv_id) or {}
-                    try:
-                        msgs = _fetch_messages(cw_url, cw_account, cw_token, conv_id, start_dt=start_dt)
-                    except Exception as e:
-                        st.warning(f"Falha ao buscar mensagens da conversa {conv_id}: {e}")
-                        continue
-                    has_bot_outgoing = False
-                    has_agent_outgoing = False
-                    conv_received = 0
-                    conv_sent = 0
-                    conv_priv = 0
-                    conv_rows = []
-                    should_add_rows = conv_id in table_conv_set
-                    for msg in msgs:
-                        msg_dt_raw = msg.get("created_at") or msg.get("timestamp")
-                        msg_dt = _parse_ts(msg_dt_raw)
-                        msg_local = None
-                        if msg_dt:
-                            msg_local = msg_dt.astimezone(TZ)
-                            if msg_local < start_dt or msg_local > end_dt:
+                max_workers = min(3, max(1, len(message_conv_ids)))
+                batch_size = max_workers * 2
+                batch_pause = 0.4
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    for batch in _chunk_list(message_conv_ids, batch_size):
+                        future_map = {
+                            executor.submit(
+                                _fetch_messages,
+                                cw_url,
+                                cw_account,
+                                cw_token,
+                                conv_id,
+                                start_dt=start_dt,
+                            ): conv_id
+                            for conv_id in batch
+                        }
+                        for future in as_completed(future_map):
+                            conv_id = future_map[future]
+                            conv_info = conv_meta.get(conv_id) or {}
+                            try:
+                                msgs = future.result()
+                            except Exception as e:
+                                st.warning(f"Falha ao buscar mensagens da conversa {conv_id}: {e}")
                                 continue
-                        direction = _message_direction(msg)
-                        if direction == "outgoing":
-                            if _is_bot_sender(msg):
-                                has_bot_outgoing = True
-                            elif _is_agent_sender(msg):
-                                has_agent_outgoing = True
-                        if not _include_message_for_type(msg, conversation_type):
-                            continue
-                        is_private = msg.get("private")
-                        if isinstance(is_private, str):
-                            is_private = is_private.strip().lower() in ("true", "1", "yes", "sim")
-                        if is_private:
-                            conv_priv += 1
-                        if direction == "incoming":
-                            conv_received += 1
-                        elif direction == "outgoing":
-                            conv_sent += 1
-                        if not should_add_rows:
-                            continue
-                        content = msg.get("content")
-                        if content is None:
-                            content = msg.get("processed_message_content") or ""
-                        conv_rows.append(
-                            {
-                                "id_conversa": conv_id,
-                                "autor": _message_sender_label(msg),
-                                "nome do contato": conv_info.get("contact_name", ""),
-                                "numero do contato": conv_info.get("contact_phone", ""),
-                                "data hora de início da conversa": conv_info.get("created_str", ""),
-                                "caixa de entrada": conv_info.get("inbox_name", ""),
-                                "tempo para a primeira resposta": conv_info.get("first_reply_delta", ""),
-                                "mensagem": content,
-                                "_sort_conv_dt": conv_info.get("created_dt"),
-                                "_sort_msg_dt": msg_local if msg_dt else None,
-                            }
-                        )
-                    if conversation_type == "Bot" and not has_bot_outgoing:
-                        continue
-                    if conversation_type == "Agente" and not has_agent_outgoing:
-                        continue
-                    allowed_conv_ids.add(conv_id)
-                    total_recebidas += conv_received
-                    total_enviadas += conv_sent
-                    total_privadas += conv_priv
-                    if conv_priv:
-                        conversas_privadas.add(conv_id)
-                    if conv_rows:
-                        message_rows.extend(conv_rows)
+                            has_bot_outgoing = False
+                            has_agent_outgoing = False
+                            conv_received = 0
+                            conv_sent = 0
+                            conv_priv = 0
+                            conv_rows = []
+                            should_add_rows = conv_id in table_conv_set
+                            for msg in msgs:
+                                msg_dt_raw = msg.get("created_at") or msg.get("timestamp")
+                                msg_dt = _parse_ts(msg_dt_raw)
+                                msg_local = None
+                                if msg_dt:
+                                    msg_local = msg_dt.astimezone(TZ)
+                                    if msg_local < start_dt or msg_local > end_dt:
+                                        continue
+                                status_val = msg.get("status") or msg.get("delivery_status") or msg.get("message_status") or msg.get("state")
+                                if selected_message_statuses and str(status_val) not in selected_message_statuses:
+                                    continue
+                                direction = _message_direction(msg)
+                                if direction == "outgoing":
+                                    if _is_bot_sender(msg):
+                                        has_bot_outgoing = True
+                                    elif _is_agent_sender(msg):
+                                        has_agent_outgoing = True
+                                if not _include_message_for_type(msg, conversation_type):
+                                    continue
+                                is_private = msg.get("private")
+                                if isinstance(is_private, str):
+                                    is_private = is_private.strip().lower() in ("true", "1", "yes", "sim")
+                                if is_private:
+                                    conv_priv += 1
+                                if direction == "incoming":
+                                    conv_received += 1
+                                elif direction == "outgoing":
+                                    conv_sent += 1
+                                if not should_add_rows:
+                                    continue
+                                content = msg.get("content")
+                                if content is None:
+                                    content = msg.get("processed_message_content") or ""
+                                conv_rows.append(
+                                    {
+                                        "id_conversa": conv_id,
+                                        "autor": _message_sender_label(msg),
+                                        "nome do contato": conv_info.get("contact_name", ""),
+                                        "numero do contato": conv_info.get("contact_phone", ""),
+                                        "data hora de início da conversa": conv_info.get("created_str", ""),
+                                        "caixa de entrada": conv_info.get("inbox_name", ""),
+                                        "tempo para a primeira resposta": conv_info.get("first_reply_delta", ""),
+                                        "status da mensagem": status_val,
+                                        "mensagem": content,
+                                        "_sort_conv_dt": conv_info.get("created_dt"),
+                                        "_sort_msg_dt": msg_local if msg_dt else None,
+                                    }
+                                )
+                            if conversation_type == "Bot" and not has_bot_outgoing:
+                                continue
+                            if conversation_type == "Agente" and not has_agent_outgoing:
+                                continue
+                            allowed_conv_ids.add(conv_id)
+                            total_recebidas += conv_received
+                            total_enviadas += conv_sent
+                            total_privadas += conv_priv
+                            if conv_priv:
+                                conversas_privadas.add(conv_id)
+                            if conv_rows:
+                                message_rows.extend(conv_rows)
+                        if len(message_conv_ids) > batch_size:
+                            time_module.sleep(batch_pause + random.uniform(0, 0.2))
             if conversation_type != "Todos":
                 rows = [row for row in rows if row.get("conversation_id") in allowed_conv_ids]
             message_rows.sort(
@@ -999,6 +1098,7 @@ def render_conversations_analysis_tab():
                 "data hora de início da conversa",
                 "caixa de entrada",
                 "tempo para a primeira resposta",
+                "status da mensagem",
                 "mensagem",
             ]
             df_messages = df_messages.reindex(columns=display_cols)
