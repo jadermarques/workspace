@@ -1,5 +1,6 @@
 """Main workspace landing page and system status cards."""
 
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -49,6 +50,18 @@ def main():
             </div>
             """
         ).strip()
+
+    def is_webhook_running() -> bool:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "uvicorn app.modules.bot.bot_start:app"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
 
     # Status DB
     try:
@@ -181,9 +194,14 @@ def main():
             resp = client.responses.create(
                 model=model_to_test,
                 input="Teste rápido: responda 'ok'.",
-                max_output_tokens=5,
+                max_output_tokens=16,
             )
-            oa_status = ("ok", f"OPENAI_API_KEY carregada ({masked}) — teste OK no modelo {model_to_test}")
+            oa_status = (
+                "ok",
+                "Conexão OpenAI - OK"
+                f"<br/>Chave API Carregada - OK ({masked})"
+                f"<br/>Modelo Configurado - {model_to_test}",
+            )
         except Exception as e:
             msg = str(e)
             if "proxies" in msg.lower():
@@ -249,6 +267,10 @@ def main():
 
     workspace_now = datetime.now(TZ)
     workspace_time_status = ("ok", f"Hora: {workspace_now.strftime('%H:%M:%S')} • Time zone: {TZ.key}")
+    webhook_running = is_webhook_running()
+    webhook_status = ("ok", "Webhook em execução (uvicorn)") if webhook_running else ("warn", "Webhook inativo")
+    bot_enabled = bool(settings.get("bot_enabled", True))
+    bot_status = ("ok", "Bot ativado") if bot_enabled else ("warn", "Bot desativado")
 
     status_grid_html = "\n".join(
         [
@@ -257,8 +279,10 @@ def main():
             status_card_html("Chatwoot", cw_status[0], cw_status[1]),
             status_card_html("OpenAI", oa_status[0], oa_status[1]),
             status_card_html("Versão do Chatwoot", cw_version_status[0], cw_version_status[1]),
-            status_card_html("Hora do Chatwoot", cw_time_status[0], cw_time_status[1], span=2),
-            status_card_html("Hora do Workspace", workspace_time_status[0], workspace_time_status[1], span=2),
+            status_card_html("Webhook", webhook_status[0], webhook_status[1]),
+            status_card_html("Bot", bot_status[0], bot_status[1]),
+            status_card_html("Hora do Chatwoot", cw_time_status[0], cw_time_status[1]),
+            status_card_html("Hora do Workspace", workspace_time_status[0], workspace_time_status[1]),
             "</div>",
         ]
     )
@@ -266,7 +290,7 @@ def main():
 
     st.markdown("### Como navegar")
     st.info(
-        "Use a lista de páginas na lateral (Principal, Bot Studio, Configurações, Relatórios, Gestão, Analytics). "
+        "Use a lista de páginas na lateral (Principal, Bot Studio, Configurações, Relatórios, Gestão, Análises, Ajuda). "
         "Cada página carrega a aplicação específica na área central."
     )
 

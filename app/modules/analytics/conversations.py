@@ -4,6 +4,7 @@ This module fetches conversations/messages from the Chatwoot API, applies filter
 and renders Streamlit tabs for conversation listings and analysis metrics.
 """
 
+import os
 import sys
 import json
 import re
@@ -20,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.bot.engine import load_settings
+from src.bot.engine import load_env_once, load_settings
 from src.utils.timezone import TZ
 
 
@@ -178,6 +179,40 @@ def _fetch_agents(base_url: str, account_id: str, token: str, max_pages: int = 5
     return agents
 
 
+def _fetch_teams(base_url: str, account_id: str, token: str, max_pages: int = 5, per_page: int = 100) -> List[Dict]:
+    """Fetch teams from Chatwoot with pagination."""
+    teams = []
+    page = 1
+    while page <= max_pages:
+        url = f"{base_url}/api/v1/accounts/{account_id}/teams"
+        resp = requests.get(
+            url,
+            params={"page": page, "per_page": per_page},
+            headers=_cw_headers(token),
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            break
+        data = resp.json() or {}
+        payload = []
+        if isinstance(data, dict):
+            payload = data.get("data") or data.get("payload") or data.get("teams") or []
+        elif isinstance(data, list):
+            payload = data
+        if not payload:
+            break
+        for team in payload:
+            if isinstance(team, dict):
+                team_id = team.get("id")
+                name = team.get("name") or team.get("title") or str(team_id)
+                if team_id:
+                    teams.append({"id": team_id, "name": name})
+        if len(payload) < per_page:
+            break
+        page += 1
+    return teams
+
+
 def _fetch_conversations(base_url: str, account_id: str, token: str, start_dt: datetime, status: str = "all", max_pages: int = 30, per_page: int = 50) -> List[Dict]:
     """Fetch conversations from Chatwoot, stopping when past the start date."""
     conversations = []
@@ -280,7 +315,16 @@ def _build_state_key(prefix: str, suffix: str) -> str:
     return f"{prefix}_{suffix}"
 
 
-def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], agent_options: List[str], default_start: date, default_end: date, result_keys: List[str]) -> Dict:
+def _render_conversation_filters(
+    prefix: str,
+    inbox_options: Dict[str, int],
+    agent_options: List[str],
+    default_start: date,
+    default_end: date,
+    result_keys: List[str],
+    team_options: Optional[List[str]] = None,
+    conversation_type_options: Optional[List[str]] = None,
+) -> Dict:
     """Render filter controls and return their values in a dict."""
     defaults = {
         _build_state_key(prefix, "start_date"): default_start,
@@ -293,6 +337,10 @@ def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], age
         _build_state_key(prefix, "assigned"): "Todos",
         _build_state_key(prefix, "inboxes"): list(inbox_options.keys()),
     }
+    if team_options is not None:
+        defaults[_build_state_key(prefix, "team")] = "Todos"
+    if conversation_type_options is not None:
+        defaults[_build_state_key(prefix, "conversation_type")] = "Todos"
     clear_key = _build_state_key(prefix, "clear_filters")
     if st.session_state.get(clear_key):
         for key, default_value in defaults.items():
@@ -316,23 +364,47 @@ def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], age
     with col2:
         end_date = st.date_input("Data final", key=_build_state_key(prefix, "end_date"))
 
-    col3, col4 = st.columns(2)
-    with col3:
-        contact_name = st.text_input("Nome do contato (parcial)", key=_build_state_key(prefix, "contact_name"))
-    with col4:
-        agent_label = st.selectbox("Agente", options=agent_options, key=_build_state_key(prefix, "agent"))
+    if team_options is not None:
+        col3, col4, col5 = st.columns(3)
+        with col3:
+            contact_name = st.text_input("Nome do contato (parcial)", key=_build_state_key(prefix, "contact_name"))
+        with col4:
+            agent_label = st.selectbox("Agente", options=agent_options, key=_build_state_key(prefix, "agent"))
+        with col5:
+            team_label = st.selectbox("Time", options=team_options, key=_build_state_key(prefix, "team"))
+    else:
+        col3, col4 = st.columns(2)
+        with col3:
+            contact_name = st.text_input("Nome do contato (parcial)", key=_build_state_key(prefix, "contact_name"))
+        with col4:
+            agent_label = st.selectbox("Agente", options=agent_options, key=_build_state_key(prefix, "agent"))
+        team_label = "Todos"
 
-    col5, col6 = st.columns(2)
-    with col5:
-        contact_number = st.text_input("Número do contato (parcial)", key=_build_state_key(prefix, "contact_number"))
-    with col6:
-        conversation_id_filter = st.text_input("ID da conversa", key=_build_state_key(prefix, "conversation_id"))
+    if conversation_type_options is not None:
+        col6, col7, col8 = st.columns(3)
+        with col6:
+            contact_number = st.text_input("Número do contato (parcial)", key=_build_state_key(prefix, "contact_number"))
+        with col7:
+            conversation_id_filter = st.text_input("ID da conversa", key=_build_state_key(prefix, "conversation_id"))
+        with col8:
+            conversation_type = st.selectbox(
+                "Tipo de conversa",
+                options=conversation_type_options,
+                key=_build_state_key(prefix, "conversation_type"),
+            )
+    else:
+        col6, col7 = st.columns(2)
+        with col6:
+            contact_number = st.text_input("Número do contato (parcial)", key=_build_state_key(prefix, "contact_number"))
+        with col7:
+            conversation_id_filter = st.text_input("ID da conversa", key=_build_state_key(prefix, "conversation_id"))
+        conversation_type = "Todos"
 
-    col7, col8 = st.columns(2)
-    with col7:
+    col9, col10 = st.columns(2)
+    with col9:
         status_options = ["Todos", "open", "resolved", "pending", "snoozed"]
         status_filter = st.selectbox("Status da conversa", options=status_options, key=_build_state_key(prefix, "status"))
-    with col8:
+    with col10:
         assigned_filter = st.selectbox("Conversa atribuída", options=["Todos", "Sim", "Não"], key=_build_state_key(prefix, "assigned"))
 
     selected_inboxes = st.multiselect(
@@ -353,6 +425,9 @@ def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], age
     selected_agent_id = None
     if agent_label != "Todos":
         selected_agent_id = str(agent_label.split(" - ")[0]).strip()
+    selected_team_id = None
+    if team_label != "Todos":
+        selected_team_id = str(team_label.split(" - ")[0]).strip()
 
     return {
         "start_date": start_date,
@@ -364,6 +439,8 @@ def _render_conversation_filters(prefix: str, inbox_options: Dict[str, int], age
         "assigned_filter": assigned_filter,
         "selected_inbox_ids": selected_inbox_ids,
         "selected_agent_id": selected_agent_id,
+        "selected_team_id": selected_team_id,
+        "conversation_type": conversation_type,
         "gerar": gerar,
     }
 
@@ -408,6 +485,16 @@ def _collect_conversation_rows(conversations: List[Dict], filters: Dict, inbox_i
 
         status_val = conv.get("status") or meta.get("status")
         if filters["status_filter"] != "Todos" and str(status_val) != filters["status_filter"]:
+            continue
+
+        team_id = conv.get("team_id")
+        if not team_id:
+            team_data = conv.get("team") or meta.get("team") or {}
+            if isinstance(team_data, dict):
+                team_id = team_data.get("id")
+            else:
+                team_id = team_data
+        if filters.get("selected_team_id") and str(team_id) != str(filters["selected_team_id"]):
             continue
 
         if enforce_created_range:
@@ -461,29 +548,107 @@ def _message_direction(msg: Dict) -> Optional[str]:
     return None
 
 
-def _count_message_directions(messages: List[Dict], start_dt: datetime, end_dt: datetime):
-    """Count incoming/outgoing/private messages within a time window."""
-    received = 0
-    sent = 0
-    private_total = 0
-    for msg in messages:
-        msg_ts_raw = msg.get("created_at") or msg.get("timestamp")
-        msg_dt = _parse_ts(msg_ts_raw)
-        if msg_dt:
-            msg_local = msg_dt.astimezone(TZ)
-            if msg_local < start_dt or msg_local > end_dt:
-                continue
-        is_private = msg.get("private")
-        if isinstance(is_private, str):
-            is_private = is_private.strip().lower() in ("true", "1", "yes", "sim")
-        if is_private:
-            private_total += 1
-        direction = _message_direction(msg)
-        if direction == "incoming":
-            received += 1
-        elif direction == "outgoing":
-            sent += 1
-    return received, sent, private_total
+def _message_sender_type(msg: Dict) -> str:
+    """Extract sender type from message payload."""
+    sender_type = msg.get("sender_type")
+    if not sender_type:
+        sender = msg.get("sender") or {}
+        if isinstance(sender, dict):
+            sender_type = sender.get("type") or sender.get("sender_type")
+    if not sender_type:
+        sender_info = msg.get("sender_info") or {}
+        if isinstance(sender_info, dict):
+            sender_type = sender_info.get("type") or sender_info.get("sender_type")
+    if not sender_type:
+        return ""
+    return str(sender_type).strip().lower()
+
+
+def _parse_env_list(value: str) -> List[str]:
+    return [item.strip() for item in re.split(r"[;,]", value or "") if item.strip()]
+
+
+def _bot_sender_config() -> Dict[str, set]:
+    """Load bot sender identifiers from environment."""
+    load_env_once()
+    names = {name.lower() for name in _parse_env_list(os.getenv("BOT_SENDER_NAMES", ""))}
+    ids = {sid for sid in _parse_env_list(os.getenv("BOT_SENDER_IDS", ""))}
+    return {"names": names, "ids": ids}
+
+
+def _sender_identity(msg: Dict) -> Dict[str, str]:
+    sender = msg.get("sender") or msg.get("sender_info") or {}
+    sender_id = ""
+    sender_name = ""
+    if isinstance(sender, dict):
+        sender_id = str(sender.get("id") or "").strip()
+        sender_name = str(sender.get("name") or sender.get("email") or sender.get("identifier") or "").strip()
+    return {"id": sender_id, "name": sender_name}
+
+
+def _is_bot_sender(msg: Dict) -> bool:
+    """Return True if the message was sent by a bot."""
+    sender_type = _message_sender_type(msg)
+    if sender_type in ("agentbot", "bot"):
+        return True
+    config = _bot_sender_config()
+    if not config["names"] and not config["ids"]:
+        return False
+    identity = _sender_identity(msg)
+    if identity["id"] and identity["id"] in config["ids"]:
+        return True
+    if identity["name"] and identity["name"].lower() in config["names"]:
+        return True
+    return False
+
+
+def _is_agent_sender(msg: Dict) -> bool:
+    """Return True if the message was sent by a human agent."""
+    sender_type = _message_sender_type(msg)
+    if _is_bot_sender(msg):
+        return False
+    return sender_type in ("user", "agent")
+
+
+def _include_message_for_type(msg: Dict, conversation_type: str) -> bool:
+    """Filter messages by conversation type (Bot/Agente/Todos)."""
+    if conversation_type == "Todos":
+        return True
+    direction = _message_direction(msg)
+    if direction == "incoming":
+        return True
+    if direction == "outgoing":
+        if conversation_type == "Bot":
+            return _is_bot_sender(msg)
+        if conversation_type == "Agente":
+            return _is_agent_sender(msg) and not _is_bot_sender(msg)
+    return False
+
+
+def _message_sender_label(msg: Dict) -> str:
+    """Return a label for who sent the message (agent/bot/client)."""
+    direction = _message_direction(msg)
+    if direction == "incoming":
+        return "Cliente"
+    if _is_bot_sender(msg):
+        return "Bot"
+    if _is_agent_sender(msg):
+        identity = _sender_identity(msg)
+        if identity["name"]:
+            return identity["name"]
+        for key in ("sender_name", "sender_email", "agent_name", "user_name"):
+            value = msg.get(key)
+            if value:
+                return str(value)
+        return "Agente (tipo não informado)"
+    for key in ("sender_name", "sender_email", "agent_name", "user_name"):
+        value = msg.get(key)
+        if value:
+            return str(value)
+    sender_type = _message_sender_type(msg)
+    if not sender_type:
+        return "Agente (tipo não informado)"
+    return "Agente"
 
 
 def render_conversations_tab():
@@ -633,6 +798,17 @@ def render_conversations_analysis_tab():
         st.session_state["cw_conv_agents"] = agents_cache
     agent_options = ["Todos"] + [f"{a['id']} - {a['name']}" for a in agents_cache]
 
+    teams_cache = st.session_state.get("cw_conv_teams")
+    if teams_cache is None:
+        with st.spinner("Carregando times..."):
+            try:
+                teams_cache = _fetch_teams(cw_url, cw_account, cw_token)
+            except Exception as e:
+                teams_cache = []
+                st.warning(f"Não foi possível carregar times: {e}")
+        st.session_state["cw_conv_teams"] = teams_cache
+    team_options = ["Todos"] + [f"{t['id']} - {t['name']}" for t in teams_cache]
+
     filters = _render_conversation_filters(
         "conv_analysis",
         inbox_options,
@@ -640,6 +816,8 @@ def render_conversations_analysis_tab():
         default_start,
         default_end,
         result_keys=["conv_analysis_stats", "conv_analysis_messages"],
+        team_options=team_options,
+        conversation_type_options=["Agente", "Bot", "Todos"],
     )
 
     if filters["gerar"]:
@@ -682,6 +860,8 @@ def render_conversations_analysis_tab():
             message_rows = []
             message_conv_set = set(message_conv_ids)
             table_conv_set = set(conv_api_ids)
+            allowed_conv_ids = set()
+            conversation_type = filters.get("conversation_type") or "Todos"
             conv_meta = {}
             for conv in conversations:
                 conv_id = conv.get("id") or conv.get("display_id")
@@ -716,12 +896,12 @@ def render_conversations_analysis_tab():
                     except Exception as e:
                         st.warning(f"Falha ao buscar mensagens da conversa {conv_id}: {e}")
                         continue
-                    recv, sent, priv = _count_message_directions(msgs, start_dt, end_dt)
-                    total_recebidas += recv
-                    total_enviadas += sent
-                    total_privadas += priv
-                    if priv:
-                        conversas_privadas.add(conv_id)
+                    has_bot_outgoing = False
+                    has_agent_outgoing = False
+                    conv_received = 0
+                    conv_sent = 0
+                    conv_priv = 0
+                    conv_rows = []
                     should_add_rows = conv_id in table_conv_set
                     for msg in msgs:
                         msg_dt_raw = msg.get("created_at") or msg.get("timestamp")
@@ -731,14 +911,32 @@ def render_conversations_analysis_tab():
                             msg_local = msg_dt.astimezone(TZ)
                             if msg_local < start_dt or msg_local > end_dt:
                                 continue
+                        direction = _message_direction(msg)
+                        if direction == "outgoing":
+                            if _is_bot_sender(msg):
+                                has_bot_outgoing = True
+                            elif _is_agent_sender(msg):
+                                has_agent_outgoing = True
+                        if not _include_message_for_type(msg, conversation_type):
+                            continue
+                        is_private = msg.get("private")
+                        if isinstance(is_private, str):
+                            is_private = is_private.strip().lower() in ("true", "1", "yes", "sim")
+                        if is_private:
+                            conv_priv += 1
+                        if direction == "incoming":
+                            conv_received += 1
+                        elif direction == "outgoing":
+                            conv_sent += 1
                         if not should_add_rows:
                             continue
                         content = msg.get("content")
                         if content is None:
                             content = msg.get("processed_message_content") or ""
-                        message_rows.append(
+                        conv_rows.append(
                             {
                                 "id_conversa": conv_id,
+                                "autor": _message_sender_label(msg),
                                 "nome do contato": conv_info.get("contact_name", ""),
                                 "numero do contato": conv_info.get("contact_phone", ""),
                                 "data hora de início da conversa": conv_info.get("created_str", ""),
@@ -749,6 +947,20 @@ def render_conversations_analysis_tab():
                                 "_sort_msg_dt": msg_local if msg_dt else None,
                             }
                         )
+                    if conversation_type == "Bot" and not has_bot_outgoing:
+                        continue
+                    if conversation_type == "Agente" and not has_agent_outgoing:
+                        continue
+                    allowed_conv_ids.add(conv_id)
+                    total_recebidas += conv_received
+                    total_enviadas += conv_sent
+                    total_privadas += conv_priv
+                    if conv_priv:
+                        conversas_privadas.add(conv_id)
+                    if conv_rows:
+                        message_rows.extend(conv_rows)
+            if conversation_type != "Todos":
+                rows = [row for row in rows if row.get("conversation_id") in allowed_conv_ids]
             message_rows.sort(
                 key=lambda row: (
                     row.get("_sort_conv_dt") or datetime.min.replace(tzinfo=TZ),
@@ -781,6 +993,7 @@ def render_conversations_analysis_tab():
             df_messages = pd.DataFrame(messages_table)
             display_cols = [
                 "id_conversa",
+                "autor",
                 "nome do contato",
                 "numero do contato",
                 "data hora de início da conversa",

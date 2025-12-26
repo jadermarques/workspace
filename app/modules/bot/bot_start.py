@@ -45,7 +45,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "Peça educadamente para reescrever se a mensagem estiver inaudível ou ambígua "
     "e acione um humano quando encontrar pedidos fora do escopo de suporte padrão."
 )
-ALLOWED_INBOX_ID = os.getenv("ALLOWED_INBOX_ID") or "88473"
+ALLOWED_INBOX_ID_DEFAULT = "89317"
 
 app = FastAPI()
 client = None  # inicializado após carregar config
@@ -67,6 +67,12 @@ def load_env_local():
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip())
     ENV_LOADED = True
+
+
+def get_allowed_inbox_id() -> str:
+    """Return the inbox id allowed to trigger the webhook."""
+    load_env_local()
+    return os.getenv("ALLOWED_INBOX_ID") or ALLOWED_INBOX_ID_DEFAULT
 
 
 def responder_cliente(conversation_id, primeiro_nome, user_message, inbox_id=None):
@@ -284,8 +290,9 @@ async def chatwoot_webhook(request: Request, background_tasks: BackgroundTasks):
                 conversation_id = nested.get("conversation_id")
                 inbox_id = inbox_id or nested.get("inbox_id")
 
-            if inbox_id and str(inbox_id) != str(ALLOWED_INBOX_ID):
-                print(f"⛔ Mensagem ignorada: inbox {inbox_id} diferente do permitido {ALLOWED_INBOX_ID}.")
+            allowed_inbox_id = get_allowed_inbox_id()
+            if inbox_id and str(inbox_id) != str(allowed_inbox_id):
+                print(f"⛔ Mensagem ignorada: inbox {inbox_id} diferente do permitido {allowed_inbox_id}.")
                 return {"status": "ok"}
 
             if message_id:
