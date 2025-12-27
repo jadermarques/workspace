@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 import streamlit as st
 
 from app.components.sidebar import render_sidebar
+from app.modules.management.insights_prompts import render_insights_prompts_tab
 
 
 def main():
@@ -17,10 +18,20 @@ def main():
     st.set_page_config(page_title="Gestão", page_icon="🗂️", layout="wide")
     render_sidebar(show_selector=False)
     st.header("Gestão")
-    st.info("Espaço reservado para controle de usuários/grupos.")
+    tab_users, tab_permissions, tab_insights = st.tabs(
+        ["Cadastro de Usuários", "Permissões", "Prompts de Insights"]
+    )
 
-    st.subheader("Cadastros")
-    st.write("Inclua aqui cadastros de usuários, grupos e permissões.")
+    with tab_users:
+        st.subheader("Cadastro de Usuários")
+        st.info("Em breve.")
+
+    with tab_permissions:
+        st.subheader("Permissões")
+        st.info("Em breve.")
+
+    with tab_insights:
+        render_insights_prompts_tab()
 
 
 if __name__ == "__main__":

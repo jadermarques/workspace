@@ -24,8 +24,25 @@ def render_profiles_tab():
     profile_choices = {"Novo perfil": None}
     for p in profiles_list:
         profile_choices[p["name"] or f"Perfil #{p['id']}"] = p["id"]
-    selected_profile_label = st.selectbox("Perfis", options=list(profile_choices.keys()))
+
+    select_key = "bot_profile_select"
+    pending_key = "bot_profile_select_pending"
+    pending_label = st.session_state.pop(pending_key, None)
+    if pending_label:
+        st.session_state[select_key] = pending_label if pending_label in profile_choices else "Novo perfil"
+    else:
+        current_id = st.session_state.get("selected_profile_id")
+        if current_id in profile_choices.values():
+            for label, pid in profile_choices.items():
+                if pid == current_id:
+                    st.session_state[select_key] = label
+                    break
+        elif st.session_state.get(select_key) not in profile_choices:
+            st.session_state[select_key] = "Novo perfil"
+
+    selected_profile_label = st.selectbox("Perfis", options=list(profile_choices.keys()), key=select_key)
     selected_profile_id = profile_choices.get(selected_profile_label)
+    st.session_state["selected_profile_id"] = selected_profile_id
     existing_profile = get_prompt_profile(selected_profile_id) if selected_profile_id else {"name": "", "details": "", "prompt_text": ""}
 
     st.markdown("Perfis cadastrados")
@@ -43,13 +60,14 @@ def render_profiles_tab():
                 st.code(preview or "(vazio)", language="text")
             with col_edit:
                 if st.button("Editar", key=f"edit_profile_{p['id']}"):
-                    st.session_state["selected_profile_id"] = p["id"]
+                    label = p["name"] or f"Perfil #{p['id']}"
+                    st.session_state[pending_key] = label
                     st.rerun()
             with col_del:
                 if st.button("Excluir", key=f"delete_profile_{p['id']}"):
                     delete_prompt_profile(p["id"])
                     if st.session_state.get("selected_profile_id") == p["id"]:
-                        st.session_state["selected_profile_id"] = None
+                        st.session_state[pending_key] = "Novo perfil"
                     st.rerun()
     else:
         st.info("Nenhum perfil cadastrado ainda.")
@@ -74,13 +92,12 @@ def render_profiles_tab():
                     prompt_text_input.strip(),
                     profile_id=selected_profile_id,
                 )
-                st.session_state["selected_profile_id"] = saved_id
+                st.session_state[pending_key] = name_input.strip()
                 st.success("Perfil salvo.")
                 st.rerun()
         if delete_profile_btn and selected_profile_id:
             delete_prompt_profile(selected_profile_id)
-            if st.session_state.get("selected_profile_id") == selected_profile_id:
-                st.session_state["selected_profile_id"] = None
+            st.session_state[pending_key] = "Novo perfil"
             st.success("Perfil excluído.")
             st.rerun()
 

@@ -8,7 +8,7 @@ import streamlit as st
 from src.bot.engine import set_bot_enabled
 
 
-DEFAULT_MODULES = ["Principal", "Bot Studio", "Configurações", "Relatórios", "Gestão", "Análises", "Ajuda"]
+DEFAULT_MODULES = ["Principal", "Bot Studio", "Configurações", "Dashboards", "Gestão", "Análises", "Ajuda"]
 _BOOTSTRAPPED = False
 
 
@@ -41,7 +41,7 @@ def render_sidebar(modules: List[str] = None, default: str = None, show_selector
         "Principal": "🏠",
         "Bot Studio": "🤖",
         "Configurações": "⚙️",
-        "Relatórios": "📊",
+        "Dashboards": "📊",
         "Gestão": "🗂️",
         "Análises": "📈",
         "Ajuda": "❓",

@@ -290,7 +290,7 @@ def main():
 
     st.markdown("### Como navegar")
     st.info(
-        "Use a lista de páginas na lateral (Principal, Bot Studio, Configurações, Relatórios, Gestão, Análises, Ajuda). "
+        "Use a lista de páginas na lateral (Principal, Bot Studio, Configurações, Dashboards, Gestão, Análises, Ajuda). "
         "Cada página carrega a aplicação específica na área central."
     )
 

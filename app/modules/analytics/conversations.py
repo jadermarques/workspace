@@ -18,12 +18,15 @@ from typing import Dict, List, Optional
 import pandas as pd
 import requests
 import streamlit as st
+from openai import OpenAI
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.bot.engine import load_env_once, load_settings
+from src.bot.rules import extrair_texto_resposta
+from src.utils.database import get_conn
 from src.utils.timezone import TZ
 
 
@@ -361,10 +364,371 @@ def _normalize_message_statuses(key: str, options: List[str]) -> None:
         st.session_state[key] = [status for status in valid if status != "Todos"]
 
 
+def _load_insight_prompts() -> List[Dict]:
+    """Load insight prompts from the local workspace database."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, description, created_at, prompt_text
+            FROM insight_prompts
+            ORDER BY datetime(created_at) DESC, id DESC
+            """
+        )
+        rows = cur.fetchall()
+    prompts = []
+    for row in rows:
+        prompt_id, name, description, created_at, prompt_text = row
+        prompts.append(
+            {
+                "id": prompt_id,
+                "name": name or "",
+                "description": description or "",
+                "created_at": created_at or "",
+                "prompt_text": prompt_text or "",
+            }
+        )
+    return prompts
+
+
+def _get_insight_prompt(prompt_id: Optional[int]) -> Optional[Dict]:
+    if prompt_id is None:
+        return None
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, description, created_at, prompt_text
+            FROM insight_prompts
+            WHERE id = ?
+            """,
+            (prompt_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    prompt_id, name, description, created_at, prompt_text = row
+    return {
+        "id": prompt_id,
+        "name": name or "",
+        "description": description or "",
+        "created_at": created_at or "",
+        "prompt_text": prompt_text or "",
+    }
+
+
+def _run_insights_prompt(prompt_text: str, context_text: str, model: str) -> str:
+    """Execute the selected insight prompt via OpenAI and return the output."""
+    load_env_once()
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY não definida no ambiente.")
+    client = OpenAI(api_key=api_key)
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": prompt_text},
+            {"role": "user", "content": context_text},
+        ],
+    }
+    if not str(model or "").lower().startswith("gpt-5"):
+        payload["temperature"] = 0.3
+    response = client.responses.create(**payload)
+    output = extrair_texto_resposta(response)
+    if not output:
+        raise RuntimeError("Resposta vazia do modelo.")
+    return output
+
+
+def _build_insights_context(
+    conversations: List[Dict],
+    filters: Dict,
+    inbox_id_to_name: Dict[int, str],
+    start_dt: datetime,
+    end_dt: datetime,
+    cw_url: str,
+    cw_account: str,
+    cw_token: str,
+    max_messages: int = 160,
+    max_chars: int = 12000,
+):
+    """Build a compact context string from filtered conversations/messages."""
+    rows, conv_api_ids = _collect_conversation_rows(
+        conversations,
+        filters,
+        inbox_id_to_name,
+        start_dt,
+        end_dt,
+        enforce_created_range=True,
+    )
+    _, message_conv_ids = _collect_conversation_rows(
+        conversations,
+        filters,
+        inbox_id_to_name,
+        start_dt,
+        end_dt,
+        enforce_created_range=False,
+    )
+
+    total_recebidas = 0
+    total_enviadas = 0
+    total_privadas = 0
+    conversas_privadas = set()
+    total_mensagens = 0
+    message_rows = []
+    allowed_conv_ids = set()
+    conversation_type = filters.get("conversation_type") or "Todos"
+    selected_message_statuses = filters.get("message_statuses") or ["Todos"]
+    if "Todos" in selected_message_statuses:
+        selected_message_statuses = []
+
+    conv_meta = {}
+    for conv in conversations:
+        conv_id = conv.get("id") or conv.get("display_id")
+        if conv_id is None or conv_id not in message_conv_ids:
+            continue
+        created_raw = conv.get("created_at")
+        created_dt = _parse_ts(created_raw)
+        created_local = created_dt.astimezone(TZ) if created_dt else None
+        first_reply_raw = conv.get("first_reply_created_at")
+        first_reply_dt = None
+        if first_reply_raw not in (None, "", 0, "0", 0.0, "0.0"):
+            first_reply_dt = _parse_ts(first_reply_raw)
+            if first_reply_dt:
+                first_reply_dt = first_reply_dt.astimezone(TZ)
+        meta = conv.get("meta", {}) or {}
+        sender = meta.get("sender") or conv.get("contact") or {}
+        contact_name_val = sender.get("name") or sender.get("identifier") or ""
+        contact_phone_val = sender.get("phone_number") or sender.get("phone") or sender.get("identifier") or ""
+        conv_meta[conv_id] = {
+            "created_dt": created_local,
+            "created_str": created_local.strftime("%d/%m/%Y %H:%M:%S") if created_local else "",
+            "inbox_name": inbox_id_to_name.get(conv.get("inbox_id"), conv.get("inbox_id")),
+            "first_reply_delta": _format_duration(created_local, first_reply_dt),
+            "contact_name": contact_name_val,
+            "contact_phone": contact_phone_val,
+        }
+
+    max_workers = min(3, max(1, len(message_conv_ids)))
+    batch_size = max_workers * 2
+    batch_pause = 0.4
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for batch in _chunk_list(message_conv_ids, batch_size):
+            future_map = {
+                executor.submit(
+                    _fetch_messages,
+                    cw_url,
+                    cw_account,
+                    cw_token,
+                    conv_id,
+                    start_dt=start_dt,
+                ): conv_id
+                for conv_id in batch
+            }
+            for future in as_completed(future_map):
+                conv_id = future_map[future]
+                conv_info = conv_meta.get(conv_id) or {}
+                try:
+                    msgs = future.result()
+                except Exception:
+                    continue
+                has_bot_outgoing = False
+                has_agent_outgoing = False
+                conv_received = 0
+                conv_sent = 0
+                conv_priv = 0
+                conv_rows = []
+                conv_msg_count = 0
+                for msg in msgs:
+                    msg_dt_raw = msg.get("created_at") or msg.get("timestamp")
+                    msg_dt = _parse_ts(msg_dt_raw)
+                    msg_local = None
+                    if msg_dt:
+                        msg_local = msg_dt.astimezone(TZ)
+                        if msg_local < start_dt or msg_local > end_dt:
+                            continue
+                    status_val = msg.get("status") or msg.get("delivery_status") or msg.get("message_status") or msg.get("state")
+                    if selected_message_statuses and str(status_val) not in selected_message_statuses:
+                        continue
+                    direction = _message_direction(msg)
+                    if direction == "outgoing":
+                        if _is_bot_sender(msg):
+                            has_bot_outgoing = True
+                        elif _is_agent_sender(msg):
+                            has_agent_outgoing = True
+                    if not _include_message_for_type(msg, conversation_type):
+                        continue
+                    is_private = msg.get("private")
+                    if isinstance(is_private, str):
+                        is_private = is_private.strip().lower() in ("true", "1", "yes", "sim")
+                    if is_private:
+                        conv_priv += 1
+                    if direction == "incoming":
+                        conv_received += 1
+                    elif direction == "outgoing":
+                        conv_sent += 1
+                    content = msg.get("content")
+                    if content is None:
+                        content = msg.get("processed_message_content") or ""
+                    conv_rows.append(
+                        {
+                            "id_conversa": conv_id,
+                            "autor": _message_sender_label(msg),
+                            "nome do contato": conv_info.get("contact_name", ""),
+                            "numero do contato": conv_info.get("contact_phone", ""),
+                            "data hora de início da conversa": conv_info.get("created_str", ""),
+                            "caixa de entrada": conv_info.get("inbox_name", ""),
+                            "tempo para a primeira resposta": conv_info.get("first_reply_delta", ""),
+                            "status da mensagem": status_val,
+                            "mensagem": content,
+                            "data hora da mensagem": msg_local.strftime("%d/%m/%Y %H:%M:%S") if msg_local else "",
+                            "_sort_conv_dt": conv_info.get("created_dt"),
+                            "_sort_msg_dt": msg_local if msg_dt else None,
+                        }
+                    )
+                    conv_msg_count += 1
+                if conversation_type == "Bot" and not has_bot_outgoing:
+                    continue
+                if conversation_type == "Agente" and not has_agent_outgoing:
+                    continue
+                allowed_conv_ids.add(conv_id)
+                total_recebidas += conv_received
+                total_enviadas += conv_sent
+                total_privadas += conv_priv
+                total_mensagens += conv_msg_count
+                if conv_priv:
+                    conversas_privadas.add(conv_id)
+                if conv_rows:
+                    message_rows.extend(conv_rows)
+            if len(message_conv_ids) > batch_size:
+                time_module.sleep(batch_pause + random.uniform(0, 0.2))
+
+    if conversation_type != "Todos":
+        rows = [row for row in rows if row.get("conversation_id") in allowed_conv_ids]
+
+    unique_clients = set()
+    for row in rows:
+        contact_key = (row.get("contact_phone") or "").strip()
+        if not contact_key:
+            contact_key = (row.get("contact_name") or "").strip()
+        if contact_key:
+            unique_clients.add(contact_key)
+
+    message_rows.sort(
+        key=lambda row: (
+            row.get("_sort_conv_dt") or datetime.min.replace(tzinfo=TZ),
+            str(row.get("id_conversa")),
+            row.get("_sort_msg_dt") or datetime.min.replace(tzinfo=TZ),
+        )
+    )
+    for row in message_rows:
+        row.pop("_sort_conv_dt", None)
+        row.pop("_sort_msg_dt", None)
+
+    stats = {
+        "total_conversas": len(rows),
+        "total_conversas_privadas": len(conversas_privadas),
+        "total_recebidas": total_recebidas,
+        "total_enviadas": total_enviadas,
+        "total_privadas": total_privadas,
+        "total_mensagens": total_mensagens,
+        "total_clientes_unicos": len(unique_clients),
+    }
+
+    lines = []
+    filter_lines = []
+    filter_lines.append(f"Período: {start_dt.strftime('%d/%m/%Y')} a {end_dt.strftime('%d/%m/%Y')}")
+    if filters.get("contact_name"):
+        filter_lines.append(f"Nome do contato (parcial): {filters.get('contact_name')}")
+    if filters.get("contact_number"):
+        filter_lines.append(f"Número do contato (parcial): {filters.get('contact_number')}")
+    if filters.get("conversation_id_filter"):
+        filter_lines.append(f"ID da conversa: {filters.get('conversation_id_filter')}")
+    filter_lines.append(f"Status da conversa: {filters.get('status_filter', 'Todos')}")
+    filter_lines.append(f"Conversa atribuída: {filters.get('assigned_filter', 'Todos')}")
+    filter_lines.append(f"Tipo de conversa: {filters.get('conversation_type', 'Todos')}")
+    status_list = filters.get("message_statuses") or ["Todos"]
+    if "Todos" in status_list:
+        filter_lines.append("Status da mensagem: Todos")
+    else:
+        filter_lines.append(f"Status da mensagem: {', '.join(status_list)}")
+    if filters.get("selected_agent_id"):
+        filter_lines.append(f"Agente: {filters.get('selected_agent_id')}")
+    if filters.get("selected_team_id"):
+        filter_lines.append(f"Time: {filters.get('selected_team_id')}")
+    selected_inboxes = filters.get("selected_inbox_ids") or set()
+    if selected_inboxes:
+        inbox_names = [str(inbox_id_to_name.get(i, i)) for i in selected_inboxes]
+        inbox_names_sorted = sorted(inbox_names, key=str)
+        if len(inbox_names_sorted) > 5:
+            preview = ", ".join(inbox_names_sorted[:5])
+            filter_lines.append(f"Caixas de entrada: {preview} (+{len(inbox_names_sorted) - 5})")
+        else:
+            filter_lines.append(f"Caixas de entrada: {', '.join(inbox_names_sorted)}")
+    else:
+        filter_lines.append("Caixas de entrada: Todas")
+    filter_lines.append(f"Limites: {max_messages} mensagens, {max_chars} caracteres")
+
+    lines.append("Filtros aplicados")
+    for item in filter_lines:
+        lines.append(f"- {item}")
+    lines.append("")
+    lines.append("Resumo")
+    lines.append(f"- Total de conversas: {stats['total_conversas']}")
+    lines.append(f"- Total de conversas privadas: {stats['total_conversas_privadas']}")
+    lines.append(f"- Total de mensagens recebidas: {stats['total_recebidas']}")
+    lines.append(f"- Total de mensagens enviadas: {stats['total_enviadas']}")
+    lines.append(f"- Total de mensagens privadas: {stats['total_privadas']}")
+    lines.append(f"- Total de mensagens: {stats['total_mensagens']}")
+    lines.append(f"- Total de clientes únicos: {stats['total_clientes_unicos']}")
+    lines.append("")
+    lines.append("Mensagens (amostra):")
+
+    total_chars = 0
+    count = 0
+    for row in message_rows:
+        if count >= max_messages or total_chars >= max_chars:
+            break
+        content = (row.get("mensagem") or "").replace("\n", " ").strip()
+        if len(content) > 240:
+            content = content[:240] + "..."
+        line = (
+            f"- [{row.get('status da mensagem')}] conv {row.get('id_conversa')} | "
+            f"{row.get('autor')} | {row.get('data hora da mensagem')} | {content}"
+        )
+        lines.append(line)
+        count += 1
+        total_chars += len(line)
+    if count < len(message_rows):
+        lines.append(f"... ({len(message_rows) - count} mensagens omitidas)")
+
+    return stats, "\n".join(lines), filter_lines
+
 def _chunk_list(values: List, size: int):
     """Yield fixed-size chunks from a list."""
     for idx in range(0, len(values), size):
         yield values[idx : idx + size]
+
+
+def _insights_filters_signature(filters: Dict) -> tuple:
+    """Return a hashable signature for the current insights filters."""
+    selected_inboxes = tuple(sorted(filters.get("selected_inbox_ids") or []))
+    message_statuses = tuple(sorted(filters.get("message_statuses") or []))
+    return (
+        filters.get("start_date"),
+        filters.get("end_date"),
+        filters.get("contact_name") or "",
+        filters.get("contact_number") or "",
+        filters.get("conversation_id_filter") or "",
+        filters.get("status_filter") or "",
+        filters.get("assigned_filter") or "",
+        selected_inboxes,
+        filters.get("selected_agent_id") or "",
+        filters.get("selected_team_id") or "",
+        filters.get("conversation_type") or "",
+        message_statuses,
+        filters.get("selected_prompt_id"),
+    )
 
 
 def _render_conversation_filters(
@@ -377,6 +741,11 @@ def _render_conversation_filters(
     team_options: Optional[List[str]] = None,
     conversation_type_options: Optional[List[str]] = None,
     message_status_options: Optional[List[str]] = None,
+    insight_prompt_options: Optional[Dict[str, Optional[int]]] = None,
+    require_prompt: bool = False,
+    insight_limit_defaults: Optional[Dict[str, int]] = None,
+    generate_label: str = "Gerar",
+    clear_label: str = "Limpar",
 ) -> Dict:
     """Render filter controls and return their values in a dict."""
     defaults = {
@@ -396,6 +765,15 @@ def _render_conversation_filters(
         defaults[_build_state_key(prefix, "conversation_type")] = "Todos"
     if message_status_options is not None:
         defaults[_build_state_key(prefix, "message_statuses")] = ["Todos"]
+    if insight_prompt_options is not None:
+        defaults[_build_state_key(prefix, "insight_prompt")] = next(iter(insight_prompt_options.keys()), "")
+    if insight_limit_defaults is not None:
+        defaults[_build_state_key(prefix, "insight_max_messages")] = int(
+            insight_limit_defaults.get("max_messages", 160)
+        )
+        defaults[_build_state_key(prefix, "insight_max_chars")] = int(
+            insight_limit_defaults.get("max_chars", 12000)
+        )
     clear_key = _build_state_key(prefix, "clear_filters")
     if st.session_state.get(clear_key):
         for key, default_value in defaults.items():
@@ -415,6 +793,11 @@ def _render_conversation_filters(
     message_status_key = _build_state_key(prefix, "message_statuses")
     if message_status_options is not None:
         _normalize_message_statuses(message_status_key, message_status_options)
+    insight_prompt_key = _build_state_key(prefix, "insight_prompt")
+    if insight_prompt_options is not None:
+        current_prompt = st.session_state.get(insight_prompt_key)
+        if current_prompt not in insight_prompt_options:
+            st.session_state[insight_prompt_key] = next(iter(insight_prompt_options.keys()), "")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -485,9 +868,45 @@ def _render_conversation_filters(
     )
     selected_inbox_ids = {inbox_options[name] for name in selected_inboxes} if selected_inboxes else set()
 
+    selected_prompt_id = None
+    if insight_prompt_options is not None:
+        selected_prompt_label = st.selectbox(
+            "Modelo de prompt",
+            options=list(insight_prompt_options.keys()),
+            key=insight_prompt_key,
+        )
+        selected_prompt_id = insight_prompt_options.get(selected_prompt_label)
+
+    max_messages = None
+    max_chars = None
+    if insight_limit_defaults is not None:
+        col_lim1, col_lim2 = st.columns(2)
+        with col_lim1:
+            max_messages = st.number_input(
+                "Limite de mensagens",
+                min_value=10,
+                max_value=1000,
+                step=10,
+                key=_build_state_key(prefix, "insight_max_messages"),
+            )
+        with col_lim2:
+            max_chars = st.number_input(
+                "Limite de caracteres do contexto",
+                min_value=2000,
+                max_value=80000,
+                step=1000,
+                key=_build_state_key(prefix, "insight_max_chars"),
+            )
+
     col_btn1, col_btn2 = st.columns(2)
-    gerar = col_btn1.button("Gerar", type="primary", key=_build_state_key(prefix, "generate"))
-    limpar = col_btn2.button("Limpar", type="secondary", key=_build_state_key(prefix, "clear"))
+    disable_generate = bool(require_prompt and insight_prompt_options is not None and selected_prompt_id is None)
+    gerar = col_btn1.button(
+        generate_label,
+        type="primary",
+        key=_build_state_key(prefix, "generate"),
+        disabled=disable_generate,
+    )
+    limpar = col_btn2.button(clear_label, type="secondary", key=_build_state_key(prefix, "clear"))
 
     if limpar:
         st.session_state[clear_key] = True
@@ -513,6 +932,9 @@ def _render_conversation_filters(
         "selected_team_id": selected_team_id,
         "conversation_type": conversation_type,
         "message_statuses": message_statuses,
+        "selected_prompt_id": selected_prompt_id,
+        "insight_max_messages": int(max_messages) if max_messages is not None else None,
+        "insight_max_chars": int(max_chars) if max_chars is not None else None,
         "gerar": gerar,
     }
 
@@ -749,6 +1171,11 @@ def render_conversations_tab():
                 st.warning(f"Não foi possível carregar caixas de entrada: {e}")
         st.session_state["cw_conv_inboxes"] = inbox_cache
     inbox_options = {i["name"]: i["id"] for i in inbox_cache if i.get("id")}
+    inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
+    inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
+    inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
+    inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
+    inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
     inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
 
     agents_cache = st.session_state.get("cw_conv_agents")
@@ -1117,4 +1544,206 @@ def render_conversations_analysis_tab():
         st.info("Nenhuma conversa encontrada para os filtros.")
 
 
-__all__ = ["render_conversations_tab", "render_conversations_analysis_tab"]
+def render_conversations_insights_tab():
+    """Render the Insights tab with the same filters as conversation analysis."""
+    st.subheader("Insights")
+    settings = load_settings() or {}
+    cw_url = (settings.get("chatwoot_url") or "").rstrip("/")
+    cw_token = settings.get("chatwoot_api_token") or ""
+    cw_account = settings.get("chatwoot_account_id") or ""
+
+    if not all([cw_url, cw_token, cw_account]):
+        st.error("Configure CHATWOOT_URL, CHATWOOT_API_TOKEN e CHATWOOT_ACCOUNT_ID para usar este painel.")
+        return
+
+    today_local = datetime.now(TZ).date()
+    default_start = today_local - timedelta(days=7)
+    default_end = today_local
+
+    inbox_cache = st.session_state.get("cw_conv_inboxes")
+    if inbox_cache is None:
+        with st.spinner("Carregando caixas de entrada..."):
+            try:
+                inbox_cache = _fetch_inboxes(cw_url, cw_account, cw_token)
+            except Exception as e:
+                inbox_cache = []
+                st.warning(f"Não foi possível carregar caixas de entrada: {e}")
+        st.session_state["cw_conv_inboxes"] = inbox_cache
+    inbox_options = {i["name"]: i["id"] for i in inbox_cache if i.get("id")}
+    inbox_id_to_name = {i["id"]: i["name"] for i in inbox_cache if i.get("id")}
+
+    agents_cache = st.session_state.get("cw_conv_agents")
+    if agents_cache is None:
+        with st.spinner("Carregando agentes/usuários..."):
+            try:
+                agents_cache = _fetch_agents(cw_url, cw_account, cw_token)
+            except Exception as e:
+                agents_cache = []
+                st.warning(f"Não foi possível carregar agentes/usuários: {e}")
+        st.session_state["cw_conv_agents"] = agents_cache
+    agent_options = ["Todos"] + [f"{a['id']} - {a['name']}" for a in agents_cache]
+
+    teams_cache = st.session_state.get("cw_conv_teams")
+    if teams_cache is None:
+        with st.spinner("Carregando times..."):
+            try:
+                teams_cache = _fetch_teams(cw_url, cw_account, cw_token)
+            except Exception as e:
+                teams_cache = []
+                st.warning(f"Não foi possível carregar times: {e}")
+        st.session_state["cw_conv_teams"] = teams_cache
+    team_options = ["Todos"] + [f"{t['id']} - {t['name']}" for t in teams_cache]
+
+    prompts = _load_insight_prompts()
+    prompt_options = {"Selecione um prompt": None}
+    for prompt in prompts:
+        label = f"#{prompt['id']} - {prompt['name'] or 'Sem nome'}"
+        prompt_options[label] = prompt["id"]
+
+    if len(prompt_options) == 1:
+        st.warning("Nenhum prompt de insights cadastrado. Cadastre um prompt antes de gerar insights.")
+
+    filters = _render_conversation_filters(
+        "conv_insights",
+        inbox_options,
+        agent_options,
+        default_start,
+        default_end,
+        result_keys=["conv_insights_output", "conv_insights_prompt_name"],
+        team_options=team_options,
+        conversation_type_options=["Agente", "Bot", "Todos"],
+        message_status_options=["Todos", "sent", "delivered", "read", "failed", "pending"],
+        insight_prompt_options=prompt_options,
+        require_prompt=True,
+        generate_label="Gerar insights",
+        clear_label="Limpar",
+    )
+
+    clear_key = _build_state_key("conv_insights", "clear_filters")
+    current_sig = _insights_filters_signature(filters)
+    last_sig = st.session_state.get("conv_insights_last_signature")
+    if last_sig is not None and current_sig != last_sig:
+        for key in (
+            "conv_insights_summary",
+            "conv_insights_context",
+            "conv_insights_output",
+            "conv_insights_prompt_id",
+            "conv_insights_prompt_name",
+        ):
+            st.session_state.pop(key, None)
+        st.session_state["conv_insights_pending"] = False
+    st.session_state["conv_insights_last_signature"] = current_sig
+
+    if filters["gerar"]:
+        if len(prompt_options) == 1:
+            st.error("Cadastre um prompt de insights para continuar.")
+            return
+        selected_prompt_id = filters.get("selected_prompt_id")
+        if selected_prompt_id is None:
+            st.error("Selecione um modelo de prompt para gerar insights.")
+            return
+        if filters["start_date"] > filters["end_date"]:
+            st.error("Período inválido: data inicial maior que a final.")
+            return
+        prompt_data = _get_insight_prompt(selected_prompt_id)
+        if not prompt_data:
+            st.error("Não encontrei o prompt selecionado.")
+            return
+        start_dt = datetime.combine(filters["start_date"], time.min, tzinfo=TZ)
+        end_dt = datetime.combine(filters["end_date"], time.max, tzinfo=TZ)
+
+        with st.spinner("Buscando dados para insights..."):
+            try:
+                conversations = _fetch_conversations(
+                    cw_url,
+                    cw_account,
+                    cw_token,
+                    start_dt,
+                    status=filters["status_filter"] if filters["status_filter"] != "Todos" else "all",
+                )
+            except Exception as e:
+                st.error(f"Falha ao buscar conversas: {e}")
+                return
+
+            stats, context_text, filter_lines = _build_insights_context(
+                conversations,
+                filters,
+                inbox_id_to_name,
+                start_dt,
+                end_dt,
+                cw_url,
+                cw_account,
+                cw_token,
+                max_messages=160,
+                max_chars=12000,
+            )
+
+        st.session_state["conv_insights_summary"] = {"filters": filter_lines, "stats": stats}
+        st.session_state["conv_insights_context"] = context_text
+        st.session_state["conv_insights_prompt_id"] = selected_prompt_id
+        st.session_state["conv_insights_pending"] = True
+        st.session_state.pop("conv_insights_output", None)
+        st.session_state.pop("conv_insights_prompt_name", None)
+
+    summary = st.session_state.get("conv_insights_summary")
+    if summary:
+        st.markdown("**Resumo Conversas**")
+        filters_text = "; ".join(summary.get("filters") or [])
+        if filters_text:
+            st.caption(f"Filtros selecionados: {filters_text}")
+        else:
+            st.caption("Filtros selecionados: nenhum filtro adicional.")
+        stats = summary.get("stats") or {}
+        st.write(f"Total de conversas: {stats.get('total_conversas', 0)}")
+        st.write(f"Total de mensagens: {stats.get('total_mensagens', 0)}")
+        st.write(f"Total de clientes únicos: {stats.get('total_clientes_unicos', 0)}")
+
+        if st.session_state.get("conv_insights_pending"):
+            st.write("Deseja realizar a análise em busca de insights relevantes aos dados filtrados?")
+            col_yes, col_no = st.columns(2)
+            if col_yes.button("Sim", key="conv_insights_confirm"):
+                prompt_id = st.session_state.get("conv_insights_prompt_id")
+                prompt_data = _get_insight_prompt(prompt_id)
+                if not prompt_data:
+                    st.error("Não encontrei o prompt selecionado.")
+                else:
+                    model = settings.get("model", "gpt-4.1-mini")
+                    provider = settings.get("provider", "openai")
+                    if provider != "openai":
+                        st.error("Provedor não suportado para insights. Ajuste para openai nas configurações.")
+                    else:
+                        with st.spinner("Gerando insights..."):
+                            try:
+                                context_text = st.session_state.get("conv_insights_context") or ""
+                                output = _run_insights_prompt(prompt_data.get("prompt_text") or "", context_text, model)
+                            except Exception as e:
+                                st.error(f"Falha ao gerar insights: {e}")
+                            else:
+                                st.session_state["conv_insights_output"] = output
+                                st.session_state["conv_insights_prompt_name"] = prompt_data.get("name") or f"Prompt #{prompt_data.get('id')}"
+                                st.session_state["conv_insights_pending"] = False
+                                st.rerun()
+            if col_no.button("Não", key="conv_insights_cancel"):
+                for key in (
+                    "conv_insights_summary",
+                    "conv_insights_context",
+                    "conv_insights_output",
+                    "conv_insights_prompt_id",
+                    "conv_insights_prompt_name",
+                    "conv_insights_last_signature",
+                ):
+                    st.session_state.pop(key, None)
+                st.session_state["conv_insights_pending"] = False
+                st.session_state[clear_key] = True
+                st.rerun()
+
+    output = st.session_state.get("conv_insights_output")
+    if output:
+        st.markdown("### Resultado")
+        prompt_name = st.session_state.get("conv_insights_prompt_name") or ""
+        if prompt_name:
+            st.caption(f"Prompt: {prompt_name}")
+        st.markdown(output)
+
+
+__all__ = ["render_conversations_tab", "render_conversations_analysis_tab", "render_conversations_insights_tab"]

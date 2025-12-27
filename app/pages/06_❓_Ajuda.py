@@ -68,7 +68,7 @@ def main():
         ("Principal", "Visão geral do sistema e status das integrações."),
         ("Bot Studio", "Criação e ajuste do comportamento do bot e fluxos de atendimento."),
         ("Configurações", "Credenciais, integrações e preferências do workspace."),
-        ("Relatórios", "Indicadores operacionais e exportação de dados."),
+        ("Dashboards", "Indicadores operacionais e exportação de dados."),
         ("Gestão", "Organização de recursos internos, cadastros e controle operacional."),
         ("Análises", "Leitura aprofundada de conversas, métricas e mensagens."),
         ("Ajuda", "Resumo rápido das funcionalidades do workspace."),
