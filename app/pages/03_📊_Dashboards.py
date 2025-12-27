@@ -1,7 +1,7 @@
 """Streamlit page for dashboards."""
 
 import sys
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -22,6 +22,22 @@ from src.utils.timezone import TZ
 
 def _cw_headers(token: str) -> Dict[str, str]:
     return {"api_access_token": token, "Content-Type": "application/json"}
+
+
+def _parse_ts(value):
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except Exception:
+                return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except Exception:
+        return None
+    return None
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -137,6 +153,77 @@ def _fetch_inboxes(base_url: str, account_id: str, token: str, max_pages: int = 
             break
         page += 1
     return inboxes
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_conversations_for_messages(
+    base_url: str,
+    account_id: str,
+    token: str,
+    start_dt,
+    inbox_id: int | None = None,
+    max_pages: int = 30,
+    per_page: int = 25,
+) -> List[Dict]:
+    conversations = []
+    page = 1
+    while page <= max_pages:
+        url = f"{base_url}/api/v1/accounts/{account_id}/conversations"
+        params = {"page": page, "per_page": per_page, "sort": "last_activity_at", "status": "all"}
+        if inbox_id is not None:
+            params["inbox_id"] = inbox_id
+        resp = requests.get(
+            url,
+            params=params,
+            headers=_cw_headers(token),
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Chatwoot respondeu {resp.status_code}: {resp.text[:200]}")
+        data = resp.json() or {}
+        payload = data.get("data", {}).get("payload") or data.get("payload") or []
+        if not payload:
+            break
+        conversations.extend(payload)
+        last = payload[-1]
+        last_ts_raw = last.get("last_activity_at") or last.get("updated_at") or last.get("timestamp") or last.get("created_at")
+        last_dt = _parse_ts(last_ts_raw)
+        if last_dt and last_dt.astimezone(TZ) < start_dt:
+            break
+        if len(payload) < per_page:
+            break
+        page += 1
+    return conversations
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_conversation_messages(
+    base_url: str,
+    account_id: str,
+    token: str,
+    conversation_id,
+    max_pages: int = 4,
+    per_page: int = 50,
+) -> List[Dict]:
+    messages = []
+    page = 1
+    while page <= max_pages:
+        url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+        resp = requests.get(
+            url,
+            params={"page": page, "per_page": per_page},
+            headers=_cw_headers(token),
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Chatwoot respondeu {resp.status_code} ao buscar mensagens: {resp.text[:200]}")
+        data = resp.json() or {}
+        payload = data.get("data", []) or data.get("payload") or []
+        if not payload:
+            break
+        messages.extend(payload)
+        page += 1
+    return messages
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -792,24 +879,144 @@ def main():
                 default_start_date = today_local - timedelta(days=7)
                 col_start_msg, col_end_msg = st.columns(2)
                 with col_start_msg:
-                    st.date_input(
+                    start_date_msg = st.date_input(
                         "Data inicial",
                         value=default_start_date,
                         key="mensagens_data_inicio",
                     )
                 with col_end_msg:
-                    st.date_input(
+                    end_date_msg = st.date_input(
                         "Data final",
                         value=today_local,
                         key="mensagens_data_fim",
                     )
-                st.multiselect(
+                inbox_selected_msg = st.multiselect(
                     "Caixas de entrada",
                     options=inbox_options,
                     default=inbox_options,
                     format_func=lambda item: item.get("name", ""),
                     key="mensagens_inbox_select",
                 )
+                if start_date_msg > end_date_msg:
+                    st.error("Período inválido: a data inicial é maior que a final.")
+                else:
+                    gerar_msg = st.button("Gerar gráfico", type="primary", key="mensagens_gerar")
+                    if not gerar_msg:
+                        st.info("Ajuste os filtros e clique em 'Gerar gráfico' para montar o gráfico.")
+                    else:
+                        start_dt_msg = datetime.combine(start_date_msg, time.min, tzinfo=TZ)
+                        end_dt_msg = datetime.combine(end_date_msg, time(23, 59, 59), tzinfo=TZ)
+                        with st.spinner("Carregando mensagens por tipo..."):
+                            try:
+                                inbox_ids_msg = [item.get("id") for item in (inbox_selected_msg or []) if item.get("id")]
+                                if not inbox_ids_msg or len(inbox_ids_msg) == len(inbox_options):
+                                    convs = _fetch_conversations_for_messages(
+                                        chatwoot_url,
+                                        chatwoot_account,
+                                        chatwoot_token,
+                                        start_dt_msg,
+                                        inbox_id=None,
+                                    )
+                                else:
+                                    convs = []
+                                    seen = set()
+                                    for inbox_id in inbox_ids_msg:
+                                        for conv in _fetch_conversations_for_messages(
+                                            chatwoot_url,
+                                            chatwoot_account,
+                                            chatwoot_token,
+                                            start_dt_msg,
+                                            inbox_id=inbox_id,
+                                        ):
+                                            conv_id = conv.get("id") or conv.get("display_id")
+                                            if conv_id in seen:
+                                                continue
+                                            seen.add(conv_id)
+                                            convs.append(conv)
+                            except Exception as exc:
+                                st.error(f"Falha ao buscar conversas para mensagens: {exc}")
+                                convs = []
+
+                        if not convs:
+                            st.info("Nenhuma conversa encontrada para o período selecionado.")
+                        else:
+                            total_text = 0
+                            total_audio = 0
+                            progress = st.progress(0, text="Contando mensagens de texto e áudio...")
+                            total_convs = len(convs)
+                            for idx, conv in enumerate(convs, start=1):
+                                conv_id = conv.get("id") or conv.get("display_id")
+                                if conv_id is None:
+                                    continue
+                                try:
+                                    messages = _fetch_conversation_messages(
+                                        chatwoot_url,
+                                        chatwoot_account,
+                                        chatwoot_token,
+                                        conv_id,
+                                    )
+                                except Exception:
+                                    continue
+                                for msg in messages:
+                                    msg_ts_raw = msg.get("created_at") or msg.get("timestamp")
+                                    msg_dt = _parse_ts(msg_ts_raw)
+                                    if not msg_dt:
+                                        continue
+                                    msg_dt_local = msg_dt.astimezone(TZ)
+                                    if msg_dt_local < start_dt_msg or msg_dt_local > end_dt_msg:
+                                        continue
+                                    attachments = msg.get("attachments") or []
+                                    has_audio = any(
+                                        isinstance(att, dict) and att.get("file_type") == "audio"
+                                        for att in attachments
+                                    )
+                                    if has_audio:
+                                        total_audio += 1
+                                    else:
+                                        total_text += 1
+                                progress.progress(min(idx / total_convs, 1.0), text=f"Contando mensagens... ({idx}/{total_convs})")
+                            progress.empty()
+
+                            total_messages = total_text + total_audio
+                            if total_messages == 0:
+                                st.info("Nenhuma mensagem encontrada no período selecionado.")
+                            else:
+                                rows = [
+                                    {
+                                        "tipo": "Texto",
+                                        "mensagens": total_text,
+                                        "percentual": (total_text / total_messages) * 100,
+                                    },
+                                    {
+                                        "tipo": "Áudio",
+                                        "mensagens": total_audio,
+                                        "percentual": (total_audio / total_messages) * 100,
+                                    },
+                                ]
+                                df_msgs = pd.DataFrame(rows)
+                                df_msgs["rotulo"] = df_msgs.apply(
+                                    lambda r: f"{int(r['mensagens'])} ({r['percentual']:.2f}%)",
+                                    axis=1,
+                                )
+                                chart_base = alt.Chart(df_msgs).encode(
+                                    x=alt.X("tipo:N", title="Tipo"),
+                                    y=alt.Y("mensagens:Q", title="Mensagens"),
+                                )
+                                chart_msgs = (
+                                    chart_base.mark_bar()
+                                    .encode(
+                                        color=alt.Color("tipo:N", scale=alt.Scale(range=["#1d4ed8", "#f59e0b"]), legend=None),
+                                        tooltip=[
+                                            alt.Tooltip("tipo:N", title="Tipo"),
+                                            alt.Tooltip("mensagens:Q", title="Mensagens"),
+                                            alt.Tooltip("percentual:Q", title="Percentual", format=".2f"),
+                                        ],
+                                    )
+                                    + chart_base.mark_text(dy=-8, color="#0f172a", size=13).encode(
+                                        text=alt.Text("rotulo:N"),
+                                    )
+                                ).properties(height=240)
+                                st.altair_chart(chart_msgs, use_container_width=True)
 
             st.markdown(
                 "<div style='font-size:1.1rem;font-weight:700;margin-top:8px;'>Resoluções</div>",
