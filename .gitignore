@@ -12,5 +12,6 @@ data/*.db
 
 # Ignorar arquivos do fonte original do chatwoot
 
-code_chawoot_4.9.1/
+code_chawoot_4.9.1/*.*
+
 
