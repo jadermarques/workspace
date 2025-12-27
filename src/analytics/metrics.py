@@ -1,13 +1,16 @@
-from datetime import datetime, timezone, timedelta, time
+"""Metrics helpers for Chatwoot analytics and reports."""
+
+from datetime import datetime, timezone, time
 from typing import List, Dict
 
 import pandas as pd
 import requests
 
-TZ = timezone(timedelta(hours=-3))
+from src.utils.timezone import TZ
 
 
 def _parse_ts(value):
+    """Parse timestamps from numeric or string values into UTC-aware datetimes."""
     if value is None:
         return None
     try:
@@ -24,10 +27,12 @@ def _parse_ts(value):
 
 
 def _chatwoot_headers(token: str):
+    """Build default headers for Chatwoot API requests."""
     return {"api_access_token": token, "Content-Type": "application/json"}
 
 
 def fetch_chatwoot_conversations(base_url: str, account_id: str, token: str, start_dt, status: str = "all", max_pages: int = 10, per_page: int = 50):
+    """Fetch conversations from Chatwoot, stopping when past the start date."""
     conversations = []
     page = 1
     while page <= max_pages:
@@ -55,6 +60,7 @@ def fetch_chatwoot_conversations(base_url: str, account_id: str, token: str, sta
 
 
 def fetch_chatwoot_messages(base_url: str, account_id: str, token: str, conversation_id, max_pages: int = 4, per_page: int = 50):
+    """Fetch messages for a single conversation."""
     messages = []
     page = 1
     while page <= max_pages:
@@ -72,6 +78,7 @@ def fetch_chatwoot_messages(base_url: str, account_id: str, token: str, conversa
 
 
 def fetch_chatwoot_agents(base_url: str, account_id: str, token: str, max_pages: int = 5, per_page: int = 50):
+    """Fetch and return a sorted list of agent names."""
     agents = []
     page = 1
     while page <= max_pages:
@@ -100,6 +107,7 @@ def fetch_chatwoot_agents(base_url: str, account_id: str, token: str, max_pages:
 
 
 def build_hourly_df(df: pd.DataFrame):
+    """Build an hourly breakdown dataframe for incoming/outgoing messages."""
     hour_counts_df = df.copy()
     hour_counts_df["hora_num"] = hour_counts_df["created_dt"].dt.hour
     grouped_hours = hour_counts_df.groupby(["hora_num", "direction"]).size().unstack(fill_value=0)

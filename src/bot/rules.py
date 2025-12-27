@@ -1,3 +1,5 @@
+"""Business rules and helpers for bot behavior and moderation."""
+
 import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Tuple
@@ -11,13 +13,12 @@ FUSO_HORARIO = pytz.timezone("America/Sao_Paulo")
 
 
 def default_schedule():
+    """Return the default weekly schedule configuration."""
     return {str(i): {"enabled": i < 5, "start": 8, "end": 18} for i in range(7)}
 
 
 def fora_do_horario_comercial(config: Dict) -> bool:
-    """
-    Retorna True se estivermos fora do horário comercial configurado.
-    """
+    """Return True when outside the configured business hours."""
     agora = datetime.now(FUSO_HORARIO)
     dia = agora.weekday()  # 0 = segunda, 6 = domingo
     hora = agora.hour
@@ -32,9 +33,7 @@ def fora_do_horario_comercial(config: Dict) -> bool:
 
 
 def custom_moderation_hit(texto: str, termos):
-    """
-    Retorna (True, termo_encontrado) se algum termo personalizado estiver presente (case-insensitive).
-    """
+    """Return (True, term) when a custom moderation term is found."""
     if not texto or not termos:
         return False, None
     texto_l = texto.lower()
@@ -46,6 +45,7 @@ def custom_moderation_hit(texto: str, termos):
 
 
 def moderar_mensagem(client: OpenAI, texto: str):
+    """Call OpenAI moderation and return structured results."""
     try:
         resp = client.moderations.create(model="omni-moderation-latest", input=texto)
         res = resp.results[0]
@@ -61,7 +61,7 @@ def moderar_mensagem(client: OpenAI, texto: str):
 
 
 def extrair_primeiro_nome(dados_webhook):
-    """Extrai nome do cliente para personalizar o atendimento."""
+    """Extract the first name for personalization."""
     try:
         sender = dados_webhook.get("sender") or dados_webhook.get("data", {}).get("sender") or {}
         nome_completo = sender.get("name") or sender.get("available_name") or ""
@@ -73,7 +73,7 @@ def extrair_primeiro_nome(dados_webhook):
 
 
 def is_audio_attachment(att):
-    """Retorna True se o attachment parecer ser áudio."""
+    """Return True when an attachment looks like audio."""
     if not att:
         return False
     mime = (att.get("file_type") or att.get("content_type") or "").lower()
@@ -84,9 +84,7 @@ def is_audio_attachment(att):
 
 
 def extrair_texto_resposta(response) -> str:
-    """
-    SDK novo expõe output_text, mas mantemos um fallback defensivo.
-    """
+    """Extract response text from the OpenAI SDK response."""
     if getattr(response, "output_text", None):
         return response.output_text.strip()
     output = getattr(response, "output", None) or []
@@ -100,6 +98,7 @@ def extrair_texto_resposta(response) -> str:
 
 
 def estimar_custo_tokens(modelo: str, input_tokens: int, output_tokens: int):
+    """Estimate token cost for the given model and token counts."""
     if input_tokens is None or output_tokens is None:
         return None
     modelo_l = (modelo or "").lower()

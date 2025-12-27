@@ -1,6 +1,8 @@
+"""Core engine utilities for settings, logs, and Chatwoot validation."""
+
 import json
 import os
-from datetime import timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -8,11 +10,11 @@ import requests
 from openai import OpenAI
 
 from src.utils.db_init import DB_PATH, ensure_db
+from src.utils.timezone import TZ
 from src.utils.database import get_conn
 
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 ENV_LOADED = False
-TZ = timezone(timedelta(hours=-3))
 
 # Mantemos a tabela de preços para validações automáticas de modelo.
 PRICING_PER_1K = {
@@ -59,9 +61,7 @@ PRICING_PER_1K = {
 
 
 def load_env_once():
-    """
-    Carrega variáveis do .env apenas uma vez sem sobrescrever as existentes.
-    """
+    """Load environment variables from .env once without overriding existing."""
     global ENV_LOADED
     if ENV_LOADED:
         return
@@ -76,6 +76,7 @@ def load_env_once():
 
 
 def build_prompt_from_blocks(blocks: Optional[Dict]) -> str:
+    """Compose a system prompt from structured blocks."""
     blocks = blocks or {}
     sections = [
         ("VOCÊ É...", blocks.get("identity") or ""),
@@ -91,6 +92,7 @@ def build_prompt_from_blocks(blocks: Optional[Dict]) -> str:
 
 
 def load_settings() -> Optional[Dict]:
+    """Load settings from the SQLite database into a dict."""
     ensure_db()
     with get_conn() as conn:
         cur = conn.cursor()
@@ -136,6 +138,7 @@ def load_settings() -> Optional[Dict]:
 
 
 def save_settings(data: Dict):
+    """Persist settings to the SQLite database."""
     ensure_db()
     with get_conn() as conn:
         cur = conn.cursor()
@@ -192,6 +195,7 @@ def save_settings(data: Dict):
 
 
 def load_prompt_profiles() -> List[Dict]:
+    """Return all prompt profiles ordered by name."""
     ensure_db()
     with get_conn() as conn:
         cur = conn.cursor()
@@ -206,6 +210,7 @@ def load_prompt_profiles() -> List[Dict]:
 
 
 def get_prompt_profile(profile_id: Optional[int]) -> Optional[Dict]:
+    """Fetch a single prompt profile by id."""
     if profile_id is None:
         return None
     ensure_db()
@@ -222,6 +227,7 @@ def get_prompt_profile(profile_id: Optional[int]) -> Optional[Dict]:
 
 
 def save_prompt_profile(name: str, details: str, prompt_text: str, profile_id: Optional[int] = None) -> int:
+    """Insert or update a prompt profile and return its id."""
     ensure_db()
     with get_conn() as conn:
         cur = conn.cursor()
@@ -249,6 +255,7 @@ def save_prompt_profile(name: str, details: str, prompt_text: str, profile_id: O
 
 
 def delete_prompt_profile(profile_id: Optional[int]):
+    """Delete a prompt profile by id if it exists."""
     if profile_id is None:
         return
     ensure_db()
@@ -259,7 +266,7 @@ def delete_prompt_profile(profile_id: Optional[int]):
 
 
 def get_fallback_profile() -> Optional[Dict]:
-    """Retorna o perfil mais recente se nenhum estiver selecionado."""
+    """Return the latest profile when no selection exists."""
     ensure_db()
     with get_conn() as conn:
         cur = conn.cursor()
@@ -271,6 +278,7 @@ def get_fallback_profile() -> Optional[Dict]:
 
 
 def load_logs(limit: int = 200) -> List[Dict]:
+    """Load recent conversation logs from the database."""
     ensure_db()
     with get_conn() as conn:
         cur = conn.cursor()
@@ -309,10 +317,7 @@ def load_logs(limit: int = 200) -> List[Dict]:
 
 
 def set_bot_enabled(enabled: bool):
-    """
-    Atualiza apenas o flag de ativação do bot, preservando demais configurações.
-    Cria defaults mínimos se ainda não houver registro.
-    """
+    """Update only the bot enabled flag while preserving other settings."""
     current = load_settings() or {}
     def_sched = {str(i): {"enabled": i < 5, "start": 8, "end": 18} for i in range(7)}
     data = {
@@ -351,6 +356,7 @@ def log_conversation(
     moderation_applied=False,
     moderation_details=None,
 ):
+    """Persist a conversation log entry to the database."""
     ensure_db()
     ts = datetime.now(TZ).isoformat()
     with get_conn() as conn:
@@ -394,10 +400,7 @@ def log_conversation(
 
 
 def validate_settings(data: Dict):
-    """
-    Executa validações após salvar configuração.
-    Retorna lista de tuplas (nome, status, mensagem).
-    """
+    """Validate settings and return (name, status, message) tuples."""
     load_env_once()
     results = []
 

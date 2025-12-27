@@ -9,3 +9,8 @@ __pycache__/
 
 # Ignorar banco de dados local
 data/*.db
+
+# Ignorar arquivos do fonte original do chatwoot
+
+code_chawoot_4.9.1/
+

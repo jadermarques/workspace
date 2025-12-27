@@ -1,3 +1,5 @@
+"""Database initialization and migrations for the workspace."""
+
 import sqlite3
 from pathlib import Path
 
@@ -8,10 +10,7 @@ DB_PATH = DATA_DIR / "bot_config.db"
 
 
 def ensure_db():
-    """
-    Cria o banco e aplica migrações defensivas.
-    É idempotente e pode ser chamado sempre que precisarmos de conexão.
-    """
+    """Create the database and apply defensive migrations (idempotent)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
@@ -60,6 +59,18 @@ def ensure_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 details TEXT,
+                prompt_text TEXT
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS insight_prompts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                description TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 prompt_text TEXT
             )
             """

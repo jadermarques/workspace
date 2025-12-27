@@ -1,10 +1,10 @@
+"""Formatting helpers for timestamps and other display values."""
+
 from datetime import datetime
 
 
 def format_ts(ts: str) -> str:
-    """
-    Converte timestamps ISO em string legível; retorna entrada se falhar.
-    """
+    """Convert an ISO timestamp to a readable string, fallback to input."""
     if not ts:
         return ""
     try:
